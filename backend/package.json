@@ -1,0 +1,29 @@
+{
+  "name": "3d-subscriber-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Token-isolated subscriber REST API for the existing 3D RADIUS platform",
+  "type": "module",
+  "engines": {
+    "node": ">=24.7.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node --env-file-if-exists=.env dist/server.js",
+    "dev": "node --env-file-if-exists=.env --import tsx --watch src/server.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/**/*.test.ts"
+  },
+  "dependencies": {
+    "@fastify/helmet": "^13.1.1",
+    "@fastify/jwt": "^10.2.2",
+    "@fastify/rate-limit": "^10.3.0",
+    "fastify": "^5.12.1",
+    "mysql2": "^3.23.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.3"
+  }
+}

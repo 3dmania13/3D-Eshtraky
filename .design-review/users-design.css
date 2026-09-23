@@ -1,0 +1,62 @@
+.nawa-page.users-reference{--u-ink:#0a2251;--u-muted:#7185ad;--u-line:#dbe7f8;--u-card:#ffffffec;--u-soft:#f4f8ff;--u-field:#fff;--u-green:#009b72;--u-green-bg:#dffbf1;--u-orange:#cf7905;--u-orange-bg:#fff3e1;--u-shadow:0 8px 26px #275eaa06;direction:rtl;padding:24px;max-width:1700px;margin:auto;background:transparent!important;color:var(--u-ink)!important}
+.users-reference .nawa-page-header{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:20px}
+.users-reference .nawa-page-header h1{font-size:27px;font-weight:800;color:var(--u-ink)!important;margin-bottom:7px}
+.users-reference .nawa-page-header p{color:var(--u-muted)!important;font-size:12px}
+.users-reference .nawa-page-actions{display:flex;gap:9px}
+.users-reference .nawa-button{border:1px solid var(--u-line)!important;border-radius:9px;background:var(--u-field)!important;color:var(--u-ink)!important;box-shadow:0 2px 5px #153a6b05;font-weight:700;transition:background .15s,border-color .15s}
+.users-reference .nawa-button:hover{border-color:#77a8de!important;background:var(--u-soft)!important}
+.users-reference .nawa-button.primary{background:linear-gradient(130deg,#ff3153,#ff003c)!important;color:#fff!important;border-color:#ff365c!important;box-shadow:0 5px 14px #ff174329}
+.users-reference .nawa-page-actions .nawa-button{padding:11px 16px;min-height:40px}
+.users-reference .nawa-stat-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}
+.users-reference .nawa-stat{position:relative;isolation:isolate;overflow:hidden;min-height:96px;display:flex;flex-direction:column;justify-content:center;padding:17px 20px 17px 86px;border:1px solid var(--u-line)!important;border-radius:16px;background:var(--u-card)!important;box-shadow:var(--u-shadow);--stat-color:#00bd83;--stat-tint:#d8fff0}
+.users-reference .nawa-stat:nth-child(2){--stat-color:#0785ff;--stat-tint:#dceeff}.users-reference .nawa-stat:nth-child(3){--stat-color:#ff5d29;--stat-tint:#ffebe3}.users-reference .nawa-stat:nth-child(4){--stat-color:#8150ff;--stat-tint:#eee6ff}
+.users-reference .nawa-stat:after{content:"";position:absolute;inset:52% 0 0;z-index:-1;background:linear-gradient(0deg,var(--stat-tint),transparent);opacity:.5;clip-path:polygon(0 65%,15% 45%,25% 58%,34% 20%,44% 17%,59% 68%,70% 63%,82% 84%,100% 65%,100% 100%,0 100%)}
+.users-reference .nawa-stat>span{color:var(--u-muted);font-size:12px}.users-reference .nawa-stat>strong{font-size:28px;line-height:1.3;color:var(--u-ink)!important;margin-top:6px}
+.users-reference .users-stat-icon{position:absolute;left:18px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:53px;height:53px;border-radius:15px;background:linear-gradient(135deg,color-mix(in srgb,var(--stat-color) 80%,white),var(--stat-color));color:#fff;font-size:27px;box-shadow:0 5px 14px color-mix(in srgb,var(--stat-color) 30%,transparent),inset 0 1px 0 #fff6}
+.users-reference .nawa-card{background:var(--u-card)!important;border:1px solid var(--u-line)!important;border-radius:16px;box-shadow:var(--u-shadow);margin-bottom:15px;overflow:hidden;color:var(--u-ink)!important}
+.users-reference .subscriber-traffic-head{padding:14px 16px 10px;border:0;gap:14px}
+.users-reference .subscriber-traffic-head h2,.users-reference .nawa-card-header h2{font-size:17px;color:var(--u-ink)!important;font-weight:800}
+.users-reference .subscriber-traffic-head p,.users-reference .nawa-card-header p{color:var(--u-muted)!important;font-size:10px;line-height:1.7}
+.users-reference .subscriber-periods{padding:3px;border:1px solid var(--u-line);background:var(--u-soft);border-radius:10px;gap:3px}
+.users-reference .subscriber-periods button{min-width:61px;padding:8px 12px;color:var(--u-ink);font-size:10px;border-radius:7px}
+.users-reference .subscriber-periods button.active{background:linear-gradient(130deg,#ff3458,#ff003a);box-shadow:0 4px 12px #ff21412b;color:white}
+.users-reference .subscriber-traffic-grid{padding:0 14px 14px;gap:12px}
+.users-reference .subscriber-traffic-grid article{position:relative;padding:17px 16px 17px 78px;background:var(--u-field);border:1px solid var(--u-line);border-radius:11px;min-height:90px}
+.users-reference .subscriber-traffic-grid span{font-size:11px;color:var(--u-muted)}
+.users-reference .subscriber-traffic-grid strong{font-size:20px;color:var(--u-ink);font-variant-numeric:tabular-nums}
+.users-reference .subscriber-traffic-grid small{font-size:9px;color:var(--u-muted)}
+.users-reference .users-traffic-icon{position:absolute;left:15px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:49px;height:49px;font-size:26px;border-radius:14px;background:#d0fae9;color:#00aa76}
+.users-reference .subscriber-traffic-grid article:nth-child(2) .users-traffic-icon{color:#8c4ef4;background:#eee1ff}.users-reference .subscriber-traffic-grid article:nth-child(3) .users-traffic-icon{color:#de8900;background:#fff1d7}
+.users-reference .nawa-card-header{padding:14px 16px 8px;border:0}
+.users-reference .nawa-filter.nawa-users-search{display:flex;gap:10px;align-items:center;padding:0 14px 12px;margin:0;background:transparent;border:0}
+.users-reference .nawa-page-size-control{background:var(--u-soft)!important;border:1px solid var(--u-line)!important;color:var(--u-muted)!important;box-shadow:none}
+.users-reference .nawa-page-size-control input{background:var(--u-field)!important;border-color:var(--u-line)!important;color:var(--u-ink)!important;min-height:36px}
+.users-reference .nawa-search-field{flex:1;min-width:140px;position:relative}
+.users-reference .nawa-search-field input{width:100%;height:40px;border:1px solid var(--u-line)!important;border-radius:9px;background:var(--u-field)!important;color:var(--u-ink)!important;padding-inline:36px 14px;box-shadow:inset 0 0 0 4px var(--u-soft)}
+.users-reference .nawa-search-field input::placeholder{color:var(--u-muted)!important}
+.users-reference .nawa-search-field>i{position:absolute;right:12px;top:12px;color:var(--u-muted)}
+.users-reference .nawa-search-button{min-height:40px;padding-inline:22px}
+.users-reference .nawa-table-wrap{margin:0 12px 12px;border:1px solid var(--u-line);border-radius:10px}
+.users-reference .nawa-table{width:100%;border-collapse:collapse;white-space:nowrap;font-size:11px;background:transparent}
+.users-reference .nawa-table th{padding:12px 9px;background:var(--u-soft)!important;color:var(--u-muted)!important;border-bottom:1px solid var(--u-line);font-size:11px}
+.users-reference .nawa-table td{padding:10px 8px;border-bottom:1px solid var(--u-line)!important;color:var(--u-ink)!important;background:transparent;vertical-align:middle}
+.users-reference .nawa-table td:first-child{display:table-cell}
+.users-reference .nawa-table tbody tr:nth-child(even){background:color-mix(in srgb,var(--u-soft) 55%,transparent)}
+.users-reference .nawa-table tbody tr:hover{background:var(--u-soft)}
+.users-reference .nawa-user b{color:var(--u-ink)!important;font-size:11px}.users-reference .nawa-user small{color:var(--u-muted)!important;font-size:9px}
+.users-reference .nawa-table td:nth-child(2) b{color:#148fda!important}
+.users-reference .nawa-badge{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:27px;padding:5px 10px;background:var(--u-green-bg)!important;color:var(--u-green)!important;border-radius:20px;font-size:10px;font-weight:700;line-height:1.4;border:0}
+.users-reference .nawa-badge.warning{background:var(--u-orange-bg)!important;color:var(--u-orange)!important}
+.users-reference .nawa-badge.muted{background:var(--u-soft)!important;color:var(--u-muted)!important}
+.users-reference .nawa-actions{display:flex;gap:5px;flex-wrap:nowrap;align-items:center}
+.users-reference .nawa-actions .nawa-button.small{padding:6px 8px;min-height:30px;font-size:9px;border-radius:8px;white-space:nowrap}
+.users-reference .nawa-actions .nawa-button:not(.primary){box-shadow:inset 0 1px 0 #ffffff10}
+.users-reference .nawa-actions .nawa-button[data-delete-user] i{color:#ff375b}
+.users-reference input:focus-visible,.users-reference button:focus-visible,.users-reference a:focus-visible{outline:2px solid #389cf9;outline-offset:3px}
+body.dark .users-reference,html[data-theme="dark"] .users-reference,body[data-theme="dark"] .users-reference{--u-ink:#eef5ff;--u-muted:#a6bfdf;--u-line:#254760;--u-card:#0b1c2cee;--u-soft:#132a40;--u-field:#0b2032;--u-green:#16e5b2;--u-green-bg:#053b33;--u-orange:#ffb52b;--u-orange-bg:#352d22;--u-shadow:0 10px 26px #0002}
+body.dark .users-reference .nawa-stat,html[data-theme="dark"] .users-reference .nawa-stat,body[data-theme="dark"] .users-reference .nawa-stat{background:linear-gradient(110deg,color-mix(in srgb,var(--stat-color) 18%,var(--u-card)),var(--u-card))!important;border-color:color-mix(in srgb,var(--stat-color) 55%,var(--u-line))!important}
+body.dark .users-reference .nawa-stat:after,html[data-theme="dark"] .users-reference .nawa-stat:after{opacity:.08}
+body.dark .users-reference .users-traffic-icon{background:#0b4a3b;color:#00e29f}body.dark .users-reference .subscriber-traffic-grid article:nth-child(2) .users-traffic-icon{background:#392760;color:#c58bff}body.dark .users-reference .subscriber-traffic-grid article:nth-child(3) .users-traffic-icon{background:#493920;color:#ffbb30}
+@media(max-width:1200px){.nawa-page.users-reference{padding:20px 14px}.users-reference .nawa-stat{padding-inline:14px 73px}.users-reference .users-stat-icon{left:12px;width:46px;height:46px}.users-reference .nawa-stat>span{font-size:10px}.users-reference .nawa-table{min-width:1050px}}
+@media(max-width:850px){.users-reference .nawa-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.users-reference .nawa-page-header{align-items:flex-start;flex-direction:column}.users-reference .nawa-page-header h1{font-size:23px}.users-reference .subscriber-traffic-head{flex-wrap:wrap}.users-reference .subscriber-traffic-grid{grid-template-columns:1fr}.users-reference .nawa-filter.nawa-users-search{flex-wrap:wrap}.users-reference .nawa-search-field{order:-1;flex-basis:100%}.users-reference .nawa-search-button{margin-inline-start:auto}}
+@media(max-width:420px){.nawa-page.users-reference{padding:16px 9px}.users-reference .nawa-stat{padding:13px 11px 13px 56px;min-height:88px}.users-reference .users-stat-icon{width:36px;height:39px;left:10px;font-size:21px}.users-reference .nawa-stat>strong{font-size:24px}.users-reference .nawa-page-actions .nawa-button{padding:10px;font-size:11px}.users-reference .subscriber-periods button{min-width:48px;padding:8px}}

@@ -8,6 +8,8 @@ import '../domain/subscriber_device.dart';
 abstract interface class DeviceRepository {
   Future<List<SubscriberDevice>> getDevices();
   Future<SubscriberDevice> renameDevice(String deviceId, String friendlyName);
+  Future<DeviceSpeedUpdate> setDeviceSpeed(String deviceId, String selection);
+  Future<void> disconnectDevice(String deviceId);
 }
 
 class ApiDeviceRepository implements DeviceRepository {
@@ -32,10 +34,28 @@ class ApiDeviceRepository implements DeviceRepository {
     );
     return SubscriberDevice.fromJson(json);
   }
+
+  @override
+  Future<DeviceSpeedUpdate> setDeviceSpeed(
+    String deviceId,
+    String selection,
+  ) async {
+    final json = await _client.putJson(
+      ApiEndpoints.deviceSpeed(deviceId),
+      data: {'selection': selection},
+    );
+    return DeviceSpeedUpdate.fromJson(json);
+  }
+
+  @override
+  Future<void> disconnectDevice(String deviceId) async {
+    await _client.deleteJson(ApiEndpoints.device(deviceId));
+  }
 }
 
 class MockDeviceRepository implements DeviceRepository {
   static const _namePrefix = 'device_friendly_name_';
+  static const _speedPrefix = 'device_speed_selection_';
 
   @override
   Future<List<SubscriberDevice>> getDevices() async {
@@ -43,10 +63,31 @@ class MockDeviceRepository implements DeviceRepository {
     final preferences = await SharedPreferences.getInstance();
     return MockData.devices(DateTime.now()).map((device) {
       final localName = preferences.getString('$_namePrefix${device.id}');
-      return localName == null
-          ? device
-          : device.copyWith(friendlyName: localName);
+      final selection = preferences.getString('$_speedPrefix${device.id}');
+      return device.copyWith(
+        friendlyName: localName,
+        speedSelection: selection,
+      );
     }).toList();
+  }
+
+  @override
+  Future<DeviceSpeedUpdate> setDeviceSpeed(
+    String deviceId,
+    String selection,
+  ) async {
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    final preferences = await SharedPreferences.getInstance();
+    if (selection == 'default') {
+      await preferences.remove('$_speedPrefix$deviceId');
+    } else {
+      await preferences.setString('$_speedPrefix$deviceId', selection);
+    }
+    return DeviceSpeedUpdate(
+      selection: selection,
+      appliedImmediately: true,
+      appliesOnNextConnection: false,
+    );
   }
 
   @override
@@ -64,5 +105,10 @@ class MockDeviceRepository implements DeviceRepository {
       DateTime.now(),
     ).firstWhere((item) => item.id == deviceId);
     return device.copyWith(friendlyName: name);
+  }
+
+  @override
+  Future<void> disconnectDevice(String deviceId) async {
+    await Future<void>.delayed(const Duration(milliseconds: 300));
   }
 }

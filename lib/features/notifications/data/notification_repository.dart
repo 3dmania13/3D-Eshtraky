@@ -6,6 +6,7 @@ import '../domain/subscriber_notification.dart';
 abstract interface class NotificationRepository {
   Future<List<SubscriberNotification>> getNotifications();
   Future<void> markRead(String id);
+  Future<void> markAllRead();
 }
 
 class ApiNotificationRepository implements NotificationRepository {
@@ -22,6 +23,11 @@ class ApiNotificationRepository implements NotificationRepository {
   @override
   Future<void> markRead(String id) async {
     await _client.patchJson(ApiEndpoints.notificationRead(id));
+  }
+
+  @override
+  Future<void> markAllRead() async {
+    await _client.patchJson(ApiEndpoints.notificationsReadAll);
   }
 }
 
@@ -42,6 +48,14 @@ class MockNotificationRepository implements NotificationRepository {
     await Future<void>.delayed(const Duration(milliseconds: 120));
     _items = _notifications
         .map((item) => item.id == id ? item.copyWith(isRead: true) : item)
+        .toList();
+  }
+
+  @override
+  Future<void> markAllRead() async {
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    _items = _notifications
+        .map((item) => item.copyWith(isRead: true))
         .toList();
   }
 }

@@ -1,0 +1,79 @@
+/* Reference dark palette, scoped to the existing theme switch. */
+.dashboard-page.dark{--ink:#f0f6ff;--muted:#a5bfdc;--line:#213e57;--surface:#0c1c2a;--canvas:#06121e;--text-main:#edf5ff;--text-soft:#abc5e4;--text-muted:#96b3d4;--bg-main:#06121e;--bg-card:#0c1c2a;--bg-input:#122638;--border:#24445f;--border-soft:#1c354c;--brand-red:#ff253e;background:radial-gradient(ellipse at 35% 0,#102c46 0,transparent 48%),#06121e!important;color:#edf5ff!important;color-scheme:dark}
+.dashboard-page.dark .sidebar{background:radial-gradient(ellipse at 80% 95%,#112e4b 0,transparent 40%),linear-gradient(180deg,#06121f,#081724)!important;border-color:#233d55}
+.dashboard-page.dark .topbar{background:#071726e8;border-color:#173248;box-shadow:0 5px 18px #0001}
+.dashboard-page.dark .profile-button,.dashboard-page.dark .topbar-actions>.icon-button,.dashboard-page.dark .notification-toggle,.dashboard-page.dark .search-box input,.dashboard-page.dark .search-box kbd,.dashboard-page.dark .dashboard-sidebar-toggle{background:linear-gradient(135deg,#172d41,#0c1c2c);border-color:#2b4b66;color:#e1efff;box-shadow:inset 0 1px 0 #ffffff06,0 4px 12px #0002}
+.dashboard-page.dark .profile-button small{color:#a6c1df}
+.dashboard-page.dark .profile-button:hover{background:#1a3349;border-color:#517392}
+.dashboard-page.dark .page-heading{background:radial-gradient(ellipse at 30% 0,#38618580,transparent 65%),linear-gradient(100deg,#0b2238,#123b60 55%,#06182b);border-color:#284966;box-shadow:inset 0 1px 0 #7098ba20}
+.dashboard-page.dark .page-heading:before{opacity:.8}
+.dashboard-page.dark .page-heading:after{background:#04121e91}
+.dashboard-page.dark .page-heading .heading-live{background:#031927c9;border-color:#1c5164;color:#d8f4ff}
+.dashboard-page.dark .panel,.dashboard-page.dark .stat-card{background:linear-gradient(120deg,#0b1b28,#0d2030);border:1px solid #23435d;box-shadow:inset 0 1px 0 #81a4c80a,0 8px 22px #0002}
+.dashboard-page.dark .real-stat:hover{box-shadow:0 8px 25px #0004;border-color:#386386}
+.dashboard-page.dark .panel-head h2,.dashboard-page.dark .real-stat h2,.dashboard-page.dark .chart-summary strong,.dashboard-page.dark .health-score strong,.dashboard-page.dark .score-ring b{color:#f4f7ff}
+.dashboard-page.dark .real-stat>p{color:#dfebfa}
+.dashboard-page.dark .real-stat>small,.dashboard-page.dark .panel-head p,.dashboard-page.dark .health-score small,.dashboard-page.dark .chart-summary span{color:#a5c5e9}
+.dashboard-page.dark .real-stat .stat-top .live-label{color:#00e8af}
+.dashboard-page.dark .real-stat .stat-top .live-label:before{background:#00dca8;box-shadow:0 0 8px #00df9e70}
+.dashboard-page.dark .stat-icon{color:#fff;box-shadow:0 4px 18px color-mix(in srgb,var(--accent) 25%,transparent),inset 0 1px 1px #ffffff80;border:1px solid color-mix(in srgb,var(--accent) 65%,white)}
+.dashboard-page.dark .stat-card:after{opacity:.32}
+.dashboard-page.dark .accent-mint:after{background:#6877ff}.dashboard-page.dark .accent-cyan:after{background:#ff4358}
+.dashboard-page.dark .metric-bar,.dashboard-page.dark .resource-list>div>div{background:#29435e}
+.dashboard-page.dark .accent-mint .metric-bar{color:#b6d6ff}.dashboard-page.dark .accent-cyan .metric-bar{color:#258eff}
+.dashboard-page.dark .dashboard-hotspot-networks>span{background:#081624!important;color:#eaf4ff!important}
+.dashboard-page.dark .accent-orange>div:not(.stat-top):not(.metric-bar)>div{background:#102638!important;color:#edf7ff}
+.dashboard-page.dark .period-tabs{background:#081928;border-color:#244762}
+.dashboard-page.dark .period-tabs button{color:#c5e1ff}
+.dashboard-page.dark .period-tabs button.active{background:linear-gradient(135deg,#ff3445,#eb071d);color:#fff;box-shadow:0 0 17px #ff203c30}
+.dashboard-page.dark .chart-wrap{background:transparent}
+.dashboard-page.dark .health-score{background:linear-gradient(110deg,#172e43,#213448);border:1px solid #29445e}
+.dashboard-page.dark .score-ring:before{background:#13283b}
+.dashboard-page.dark .score-ring small{color:#d2e6ff!important}
+.dashboard-page.dark .resource-list>div>span,.dashboard-page.dark .health-meta{color:#aecbef}
+.dashboard-page.dark .resource-list>div>span b,.dashboard-page.dark .health-meta b{color:#edf5ff}
+.dashboard-page.dark .health-meta{border-color:#24405a}
+.dashboard-page.dark .heading-live{background:#063e34;border-color:#0b6152;color:#53f4c9}
+.dashboard-page.dark .server-reboot-button{background:linear-gradient(110deg,#321d2a,#182736);border:1px solid #843347;color:#ff5568;box-shadow:none}
+.dashboard-page.dark .server-reboot-button b{color:#ff5568}.dashboard-page.dark .server-reboot-button small{color:#c6a9b7}
+.dashboard-page.dark .panel-link{color:#ff4357!important;background:transparent}
+.dashboard-page.dark .table-panel .table-scroll{border-color:#213e56}
+.dashboard-page.dark .table-panel th{background:#132a3d;color:#accfee}
+.dashboard-page.dark .table-panel td{border-color:#203e57;color:#b6d6fa}
+.dashboard-page.dark .table-panel td strong{color:#f0f6ff}
+.dashboard-page.dark .table-panel td small{color:#98b8dc}
+.dashboard-page.dark .table-panel tbody tr:nth-child(even){background:#102335}
+.dashboard-page.dark .table-panel tbody tr:hover{background:#173149}
+.dashboard-page.dark .badge.success{background:#063d35;color:#40ebbd}
+.dashboard-page.dark .badge.warning{background:#3c2a19;color:#ffa247}
+.dashboard-page.dark .batch-icon,.dashboard-page.dark .mini-avatar.violet{background:#48212c!important;color:#ff5267!important}
+.dashboard-page.dark .backup-snapshot{background:linear-gradient(125deg,#0c2730,#0c342f);border-color:#175247}
+.dashboard-page.dark .backup-snapshot-top b,.dashboard-page.dark .backup-snapshot dd{color:#edf5ff}
+.dashboard-page.dark .backup-snapshot-top>span{background:#064c3b;color:#00edae}
+.dashboard-page.dark .backup-snapshot-top em{background:#00a77c;color:#e9fff8;box-shadow:0 0 14px #00de9e35}
+.dashboard-page.dark .backup-snapshot dl div{background:#172e43}
+.dashboard-page.dark .backup-snapshot dt{color:#a8c8eb}
+.dashboard-page.dark .alert-row{background:linear-gradient(110deg,#0b1b28,#102538);border-color:#223e56}
+.dashboard-page.dark .alert-row b,.dashboard-page.dark .alert-row strong{color:#eaf4ff}
+.dashboard-page.dark .alert-row small{color:#a3c3e7}
+.dashboard-page.dark .alert-row.red>i{background:#4a1c2b;color:#ff3e57}
+.dashboard-page.dark .alert-row.mint>i{background:#054336;color:#00e3aa}
+.dashboard-page.dark .alert-row.orange>i{background:#432b1c;color:#ff8c2e}
+.dashboard-page.dark .quick-actions a{background:#082238;border-color:#145b8f;color:#34a8ff}
+.dashboard-page.dark .quick-actions a:hover{background:#10374e;border-color:#298bca;color:#a7deff}
+.dashboard-page.dark .dashboard-footer{color:#9cbbdc}
+.dashboard-page.dark [data-recent-down-panel]{border-color:#23435d}
+.dashboard-page.dark [data-recent-down-count]{background:#4c1a28!important;color:#ff5b6c!important;box-shadow:0 0 12px #ff18332b}
+.dashboard-page.dark [data-recent-down-list]>div{background:#0a1b29!important;border-color:#24425b!important;color:#bad4ee!important}
+.dashboard-page.dark [data-recent-down-list] strong,.dashboard-page.dark [data-recent-down-list] b{color:#edf5ff!important}
+.dashboard-page.dark [data-recent-down-list] small{color:#9bc3ed!important}
+.dashboard-page.dark [data-recent-down-list] [style*="background:#ffebe9"]{background:#481c2a!important;color:#ff7180!important}
+.dashboard-page.dark [data-recent-down-list] [style*="background:#e7f8f1"]{background:#073f36!important;color:#53edc4!important}
+.dashboard-page.dark .profile-popover,.dashboard-page.dark .notification-popover{background:#0c2031;border-color:#2b4964;color:#e9f3ff}
+.dashboard-page.dark .profile-popover-head{border-color:#28435c}
+.dashboard-page.dark .profile-popover-head small,.dashboard-page.dark .notification-popover small{color:#a7c5e6}
+.dashboard-page.dark .notification-popover article{border-color:#203c55}
+.dashboard-page.dark .notification-popover>button{background:#331d2a!important;border-color:#723047!important;color:#ff6477!important}
+.dashboard-page.dark .support-card{background:linear-gradient(135deg,#102e4a,#081a2b)!important;border-color:#20415f}
+.dashboard-page.dark .nawa-generic-table-controls label,.dashboard-page.dark .nawa-page-size-control,.dashboard-page.dark .nawa-generic-table-pager button{background:#10283c;border-color:#294963;color:#b9d6f4}
+.dashboard-page.dark .nawa-generic-table-controls input,.dashboard-page.dark .nawa-generic-table-controls select,.dashboard-page.dark .nawa-page-size-control input{background:#0c2032!important;border-color:#315571!important;color:#e4f1ff!important}

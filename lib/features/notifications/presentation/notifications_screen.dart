@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../../../core/strings/app_strings.dart';
@@ -50,6 +51,11 @@ class NotificationsScreen extends ConsumerWidget {
                           onTap: notification.isRead
                               ? null
                               : () => _markRead(ref, notification.id),
+                          onOpenLink:
+                              notification.linkTitle != null &&
+                                  notification.linkUrl != null
+                              ? () => _openLink(context, ref, notification)
+                              : null,
                         );
                       },
                     ),
@@ -69,21 +75,42 @@ class NotificationsScreen extends ConsumerWidget {
     WidgetRef ref,
     List<SubscriberNotification> notifications,
   ) async {
-    final repository = ref.read(notificationRepositoryProvider);
-    await Future.wait(
-      notifications
-          .where((item) => !item.isRead)
-          .map((item) => repository.markRead(item.id)),
-    );
+    await ref.read(notificationRepositoryProvider).markAllRead();
     ref.invalidate(notificationsProvider);
+  }
+
+  Future<void> _openLink(
+    BuildContext context,
+    WidgetRef ref,
+    SubscriberNotification notification,
+  ) async {
+    final uri = Uri.tryParse(notification.linkUrl ?? '');
+    if (uri == null || !['http', 'https'].contains(uri.scheme)) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('الرابط المرفق غير صالح.')));
+      return;
+    }
+    if (!notification.isRead) await _markRead(ref, notification.id);
+    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!opened && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('تعذر فتح الرابط في المتصفح.')),
+      );
+    }
   }
 }
 
 class _NotificationCard extends StatelessWidget {
-  const _NotificationCard({required this.notification, required this.onTap});
+  const _NotificationCard({
+    required this.notification,
+    required this.onTap,
+    required this.onOpenLink,
+  });
 
   final SubscriberNotification notification;
   final VoidCallback? onTap;
+  final Future<void> Function()? onOpenLink;
 
   @override
   Widget build(BuildContext context) {
@@ -133,6 +160,25 @@ class _NotificationCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 5),
                     Text(notification.body),
+                    if (notification.linkTitle != null &&
+                        notification.linkUrl != null)
+                      Align(
+                        alignment: AlignmentDirectional.centerStart,
+                        child: TextButton.icon(
+                          onPressed: onOpenLink == null
+                              ? null
+                              : () => onOpenLink!(),
+                          icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                          label: Text(notification.linkTitle!),
+                          style: TextButton.styleFrom(
+                            foregroundColor: const Color(0xFF1264DB),
+                            padding: const EdgeInsetsDirectional.only(
+                              top: 8,
+                              bottom: 2,
+                            ),
+                          ),
+                        ),
+                      ),
                     const SizedBox(height: 8),
                     Text(
                       AppDateUtils.dateTime(notification.createdAt),
@@ -155,20 +201,24 @@ class _NotificationCard extends StatelessWidget {
     NotificationType.packageExpired => Icons.schedule_rounded,
     NotificationType.usage75 ||
     NotificationType.usage90 ||
+    NotificationType.lowBalance ||
     NotificationType.dataExhausted => Icons.data_usage_rounded,
     NotificationType.rechargeSuccessful => Icons.check_circle_rounded,
     NotificationType.newDevice ||
     NotificationType.unusualDeviceCount => Icons.devices_rounded,
-    NotificationType.systemMessage => Icons.campaign_rounded,
+    NotificationType.systemMessage ||
+    NotificationType.broadcast => Icons.campaign_rounded,
   };
 
   Color _color(NotificationType type) => switch (type) {
     NotificationType.rechargeSuccessful => const Color(0xFF18864B),
     NotificationType.newDevice ||
-    NotificationType.systemMessage => const Color(0xFF176B87),
+    NotificationType.systemMessage ||
+    NotificationType.broadcast => const Color(0xFF176B87),
     NotificationType.expiringSoon ||
     NotificationType.usage75 ||
-    NotificationType.usage90 => const Color(0xFFB54708),
+    NotificationType.usage90 ||
+    NotificationType.lowBalance => const Color(0xFFB54708),
     _ => const Color(0xFFB42318),
   };
 }

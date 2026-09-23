@@ -1,0 +1,490 @@
+<?php
+declare(strict_types=1);
+
+include 'library/checklogin.php';
+$operator = (string) $_SESSION['operator_user'];
+include_once '../common/includes/config_read.php';
+$operator_perm_file = 'config_operators_list';
+include 'library/check_operator_perm.php';
+include_once 'lang/main.php';
+include_once '../common/includes/validation.php';
+include '../common/includes/layout.php';
+include_once 'include/nawa/functions.php';
+include '../common/includes/db_open.php';
+
+$dbSocket->setErrorHandling(PEAR_ERROR_RETURN);
+$fragmentMode = isset($_GET['fragment']) && $_GET['fragment'] === '1';
+$ajaxMode = $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['ajax']);
+$successMsg = '';
+$failureMsg = '';
+
+$operatorsTable = $configValues['CONFIG_DB_TBL_DALOOPERATORS'];
+$aclTable = $configValues['CONFIG_DB_TBL_DALOOPERATORS_ACL'];
+$aclFilesTable = $configValues['CONFIG_DB_TBL_DALOOPERATORS_ACL_FILES'];
+
+function nawa_operator_json(int $status, bool $ok, string $message): void
+{
+    http_response_code($status);
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    echo json_encode(['ok' => $ok, 'message' => $message], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+function nawa_operator_acl_files($dbSocket, string $table): array
+{
+    $result = $dbSocket->query("SELECT file, category, section FROM `{$table}` ORDER BY category, section, id");
+    if (DB::isError($result)) {
+        return [];
+    }
+    $files = [];
+    while ($row = $result->fetchRow(DB_FETCHMODE_ASSOC)) {
+        $file = (string) ($row['file'] ?? '');
+        if ($file !== '' && preg_match('/\A[A-Za-z0-9_]+\z/D', $file) === 1) {
+            $files[$file] = [
+                'category' => (string) ($row['category'] ?? 'Other'),
+                'section' => (string) ($row['section'] ?? 'General'),
+            ];
+        }
+    }
+    return $files;
+}
+
+function nawa_operator_templates(array $aclFiles): array
+{
+    $full = array_keys($aclFiles);
+    $operations = [];
+    $readOnly = [];
+    foreach ($aclFiles as $file => $meta) {
+        if (in_array($meta['category'], ['Management', 'Accounting', 'Billing', 'Reporting', 'Graphs'], true)) {
+            $operations[] = $file;
+        }
+        $destructive = preg_match('/(?:^|_)(?:del|delete|edit|new|add|import|cleanup|disconnect|create)(?:_|$)/i', $file) === 1;
+        $readPage = preg_match('/(?:^acct_|^rep_|^graphs_|_list$|_query$|_date$|_active$|_all$|_username$|_ipaddress$|_nasipaddress$)/i', $file) === 1;
+        if ($readPage && !$destructive) {
+            $readOnly[] = $file;
+        }
+    }
+    sort($full);
+    sort($operations);
+    sort($readOnly);
+    return ['full' => $full, 'operations' => $operations, 'readonly' => $readOnly];
+}
+
+function nawa_operator_selected_permissions(string $role, array $posted, array $aclFiles, array $templates): array
+{
+    if (isset($templates[$role])) {
+        return $templates[$role];
+    }
+    $selected = [];
+    foreach ($posted as $file) {
+        $file = (string) $file;
+        if (isset($aclFiles[$file])) {
+            $selected[] = $file;
+        }
+    }
+    $selected = array_values(array_unique($selected));
+    sort($selected);
+    return $selected;
+}
+
+function nawa_operator_save_acl($dbSocket, string $aclTable, int $operatorId, array $aclFiles, array $selected): bool
+{
+    $delete = $dbSocket->query(sprintf('DELETE FROM `%s` WHERE operator_id=%d', $aclTable, $operatorId));
+    if (DB::isError($delete)) {
+        return false;
+    }
+    $allowed = array_fill_keys($selected, true);
+    $rows = [];
+    foreach (array_keys($aclFiles) as $file) {
+        $rows[] = sprintf(
+            "(%d, '%s', %d)",
+            $operatorId,
+            $dbSocket->escapeSimple($file),
+            isset($allowed[$file]) ? 1 : 0
+        );
+    }
+    if ($rows === []) {
+        return false;
+    }
+    $insert = $dbSocket->query(sprintf(
+        'INSERT INTO `%s` (operator_id, file, access) VALUES %s',
+        $aclTable,
+        implode(',', $rows)
+    ));
+    return !DB::isError($insert);
+}
+
+function nawa_operator_role(array $permissions, array $templates): string
+{
+    sort($permissions);
+    foreach ($templates as $role => $template) {
+        $candidate = $template;
+        sort($candidate);
+        if ($permissions === $candidate) {
+            return $role;
+        }
+    }
+    return 'custom';
+}
+
+$aclFiles = nawa_operator_acl_files($dbSocket, $aclFilesTable);
+$templates = nawa_operator_templates($aclFiles);
+$currentOperatorId = (int) ($_SESSION['operator_id'] ?? 0);
+$currentPermissions = [];
+$currentAclResult = $dbSocket->query(sprintf(
+    "SELECT file FROM `%s` WHERE operator_id=%d AND access=1",
+    $aclTable,
+    $currentOperatorId
+));
+if (!DB::isError($currentAclResult)) {
+    while ($row = $currentAclResult->fetchRow()) {
+        $currentPermissions[(string) $row[0]] = true;
+    }
+}
+$canCreate = isset($currentPermissions['config_operators_new']);
+$canEdit = isset($currentPermissions['config_operators_edit']);
+$canDelete = isset($currentPermissions['config_operators_del']);
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!isset($_POST['csrf_token']) || !dalo_check_csrf_token((string) $_POST['csrf_token'])) {
+        $failureMsg = 'انتهت صلاحية الجلسة. حدّث الصفحة وحاول مرة أخرى.';
+    } else {
+        $action = (string) ($_POST['action'] ?? '');
+        if ($action === 'save') {
+            $id = max(0, (int) ($_POST['id'] ?? 0));
+            $creating = $id === 0;
+            if (($creating && !$canCreate) || (!$creating && !$canEdit)) {
+                $failureMsg = 'ليست لديك صلاحية تنفيذ هذه العملية.';
+            } else {
+                $username = trim(str_replace('%', '', (string) ($_POST['username'] ?? '')));
+                $password = (string) ($_POST['password'] ?? '');
+                $passwordConfirm = (string) ($_POST['password_confirm'] ?? '');
+                $role = (string) ($_POST['role'] ?? 'custom');
+                $postedPermissions = isset($_POST['permissions']) && is_array($_POST['permissions'])
+                    ? $_POST['permissions'] : [];
+                $selected = nawa_operator_selected_permissions($role, $postedPermissions, $aclFiles, $templates);
+
+                if (preg_match('/\A[\p{L}\p{N}_.@-]{3,64}\z/u', $username) !== 1) {
+                    $failureMsg = 'اسم المشرف يجب أن يكون بين 3 و64 حرفًا، بدون مسافات.';
+                } elseif (($creating || $password !== '') && (strlen($password) < 8 || strlen($password) > 128)) {
+                    $failureMsg = 'كلمة المرور يجب أن تكون بين 8 و128 حرفًا.';
+                } elseif (($creating || $password !== '') && $password !== $passwordConfirm) {
+                    $failureMsg = 'تأكيد كلمة المرور غير مطابق.';
+                } else {
+                    $existsSql = sprintf(
+                        "SELECT COUNT(*) FROM `%s` WHERE username='%s'%s",
+                        $operatorsTable,
+                        $dbSocket->escapeSimple($username),
+                        $creating ? '' : sprintf(' AND id<>%d', $id)
+                    );
+                    $exists = (int) $dbSocket->getOne($existsSql) > 0;
+                    if ($exists) {
+                        $failureMsg = 'اسم المشرف مستخدم مسبقًا.';
+                    } else {
+                        if (!$creating && $id === $currentOperatorId && !in_array('config_operators_list', $selected, true)) {
+                            $selected[] = 'config_operators_list';
+                        }
+                        $dbSocket->query('START TRANSACTION');
+                        if ($creating) {
+                            $hash = password_hash($password, PASSWORD_DEFAULT);
+                            $result = $dbSocket->query(sprintf(
+                                "INSERT INTO `%s` (username, password) VALUES ('%s','%s')",
+                                $operatorsTable,
+                                $dbSocket->escapeSimple($username),
+                                $dbSocket->escapeSimple($hash)
+                            ));
+                            $id = DB::isError($result) ? 0 : (int) $dbSocket->getOne('SELECT LAST_INSERT_ID()');
+                        } else {
+                            $passwordSql = $password !== ''
+                                ? sprintf(", password='%s'", $dbSocket->escapeSimple(password_hash($password, PASSWORD_DEFAULT)))
+                                : '';
+                            $result = $dbSocket->query(sprintf(
+                                "UPDATE `%s` SET username='%s'%s WHERE id=%d",
+                                $operatorsTable,
+                                $dbSocket->escapeSimple($username),
+                                $passwordSql,
+                                $id
+                            ));
+                        }
+                        $saved = $id > 0 && !DB::isError($result)
+                              && nawa_operator_save_acl($dbSocket, $aclTable, $id, $aclFiles, $selected);
+                        if ($saved) {
+                            $dbSocket->query('COMMIT');
+                            if ($id === $currentOperatorId) {
+                                $_SESSION['operator_user'] = $username;
+                                $operator = $username;
+                            }
+                            $successMsg = $creating ? 'تم إنشاء حساب المشرف بنجاح.' : 'تم تحديث حساب المشرف وصلاحياته.';
+                        } else {
+                            $dbSocket->query('ROLLBACK');
+                            $failureMsg = 'تعذر حفظ حساب المشرف في قاعدة البيانات.';
+                        }
+                    }
+                }
+            }
+        } elseif ($action === 'delete') {
+            $id = max(0, (int) ($_POST['id'] ?? 0));
+            if (!$canDelete) {
+                $failureMsg = 'ليست لديك صلاحية حذف المشرفين.';
+            } elseif ($id <= 0) {
+                $failureMsg = 'حساب المشرف المطلوب غير صالح.';
+            } elseif ($id === $currentOperatorId) {
+                $failureMsg = 'لا يمكنك حذف الحساب الذي تستخدمه الآن.';
+            } else {
+                $targetManagesOperators = (int) $dbSocket->getOne(sprintf(
+                    "SELECT COUNT(*) FROM `%s` WHERE operator_id=%d AND file='config_operators_list' AND access=1",
+                    $aclTable,
+                    $id
+                )) > 0;
+                $otherManagers = (int) $dbSocket->getOne(sprintf(
+                    "SELECT COUNT(DISTINCT operator_id) FROM `%s` WHERE operator_id<>%d AND file='config_operators_list' AND access=1",
+                    $aclTable,
+                    $id
+                ));
+                if ($targetManagesOperators && $otherManagers === 0) {
+                    $failureMsg = 'لا يمكن حذف آخر حساب يملك صلاحية إدارة المشرفين.';
+                } else {
+                    $dbSocket->query('START TRANSACTION');
+                    $aclDelete = $dbSocket->query(sprintf('DELETE FROM `%s` WHERE operator_id=%d', $aclTable, $id));
+                    $operatorDelete = $dbSocket->query(sprintf('DELETE FROM `%s` WHERE id=%d', $operatorsTable, $id));
+                    if (!DB::isError($aclDelete) && !DB::isError($operatorDelete)) {
+                        $dbSocket->query('COMMIT');
+                        $successMsg = 'تم حذف حساب المشرف.';
+                    } else {
+                        $dbSocket->query('ROLLBACK');
+                        $failureMsg = 'تعذر حذف حساب المشرف.';
+                    }
+                }
+            }
+        } else {
+            $failureMsg = 'العملية المطلوبة غير معروفة.';
+        }
+    }
+
+    if ($ajaxMode) {
+        nawa_operator_json($failureMsg === '' ? 200 : 422, $failureMsg === '', $failureMsg === '' ? $successMsg : $failureMsg);
+    }
+}
+
+$operators = [];
+$operatorResult = $dbSocket->query(sprintf('SELECT id, username FROM `%s` ORDER BY id', $operatorsTable));
+if (!DB::isError($operatorResult)) {
+    while ($row = $operatorResult->fetchRow(DB_FETCHMODE_ASSOC)) {
+        $id = (int) $row['id'];
+        $permissions = [];
+        $permissionResult = $dbSocket->query(sprintf(
+            "SELECT file FROM `%s` WHERE operator_id=%d AND access=1 ORDER BY file",
+            $aclTable,
+            $id
+        ));
+        if (!DB::isError($permissionResult)) {
+            while ($permissionRow = $permissionResult->fetchRow()) {
+                $permissions[] = (string) $permissionRow[0];
+            }
+        }
+        $operators[] = [
+            'id' => $id,
+            'username' => (string) $row['username'],
+            'permissions' => $permissions,
+            'role' => nawa_operator_role($permissions, $templates),
+        ];
+    }
+}
+
+$roleLabels = [
+    'full' => 'مدير كامل',
+    'operations' => 'مشرف تشغيل',
+    'readonly' => 'مشاهدة فقط',
+    'custom' => 'صلاحيات مخصصة',
+];
+$categoryLabels = [
+    'Accounting' => 'المحاسبة', 'Billing' => 'الفوترة', 'Configuration' => 'إعدادات النظام',
+    'GIS' => 'الخرائط', 'Graphs' => 'الرسوم البيانية', 'Management' => 'الإدارة والتشغيل',
+    'Reporting' => 'التقارير',
+];
+$groupedAcl = [];
+foreach ($aclFiles as $file => $meta) {
+    $groupedAcl[$meta['category']][$meta['section']][$file] = true;
+}
+$fullManagers = count(array_filter($operators, static fn(array $item): bool => $item['role'] === 'full'));
+$csrf = dalo_csrf_token();
+
+if (!$fragmentMode) {
+    print_html_prologue('إدارة المشرفين', $langCode, ['static/css/nawa-production.css']);
+}
+?>
+<style>
+.ops-page{display:grid;gap:1rem;color:var(--nawa-ink,#202538)}.ops-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.85rem}.ops-stat{display:flex;align-items:center;gap:.8rem;padding:1rem;border:1px solid #e5e7ef;border-radius:1rem;background:var(--nawa-surface,#fff);box-shadow:0 .45rem 1.4rem rgba(28,32,52,.05)}.ops-stat>i{display:grid;place-items:center;width:2.7rem;height:2.7rem;border-radius:.8rem;color:#5b49c6;background:#efecff;font-size:1.15rem}.ops-stat span{display:block;color:#7e8598;font-size:.72rem}.ops-stat strong{display:block;margin-top:.16rem;font-size:1rem}.ops-toolbar{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:1rem 1.15rem;border-bottom:1px solid #ececf2}.ops-search{position:relative;flex:1;max-width:380px}.ops-search i{position:absolute;right:.85rem;top:50%;transform:translateY(-50%);color:#9398a8}.ops-search input{width:100%;min-height:40px;padding:.65rem 2.35rem .65rem .8rem;border:1px solid #dfe1e8;border-radius:.7rem;background:var(--nawa-surface,#fff);color:inherit;font:inherit}.ops-user{display:flex;align-items:center;gap:.7rem}.ops-avatar{display:grid;place-items:center;width:2.35rem;height:2.35rem;border-radius:.75rem;color:#fff;background:linear-gradient(135deg,#5b49c6,#846ee4);font-weight:800}.ops-user strong,.ops-user small{display:block}.ops-user small{margin-top:.12rem;color:#858b9d;font-size:.68rem}.ops-role{display:inline-flex;align-items:center;gap:.35rem;padding:.32rem .58rem;border-radius:999px;color:#5643bd;background:#f0edff;font-size:.68rem;font-weight:800}.ops-role.operations{color:#087f62;background:#e8f8f2}.ops-role.readonly{color:#8a6113;background:#fff5db}.ops-role.custom{color:#586071;background:#eef0f4}.nawa-badge{display:inline-flex;align-items:center;gap:.35rem;padding:.3rem .55rem;border-radius:999px;color:#62697b;background:#eef0f4;font-size:.66rem;font-weight:800}.nawa-badge i{width:.38rem;height:.38rem;border-radius:50%;background:#9197a7}.nawa-badge.success{color:#087f62;background:#e8f8f2}.nawa-badge.success i{background:#15aa7e}.ops-count{font-size:.72rem;color:#72798d}.ops-actions{display:flex;gap:.35rem;justify-content:flex-end}.ops-empty{padding:3rem;text-align:center;color:#7b8295}.ops-modal{position:fixed;inset:0;z-index:1300;display:none;place-items:center;padding:1rem;background:rgba(16,18,29,.58);backdrop-filter:blur(5px)}.ops-modal.show{display:grid}.ops-dialog{width:min(760px,100%);max-height:calc(100vh - 2rem);overflow:auto;border:1px solid #e1e3eb;border-radius:1.1rem;background:var(--nawa-surface,#fff);box-shadow:0 1.5rem 4rem rgba(12,15,29,.24)}.ops-dialog.small{width:min(470px,100%)}.ops-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;padding:1.1rem 1.2rem;border-bottom:1px solid #ececf2}.ops-modal-head h3{margin:0;font-size:1.05rem}.ops-modal-head p{margin:.25rem 0 0;color:#81879a;font-size:.73rem}.ops-close{display:grid;place-items:center;width:2.15rem;height:2.15rem;border:1px solid #e0e2e9;border-radius:.65rem;background:transparent;color:#72798b;cursor:pointer}.ops-form-body{display:grid;gap:1rem;padding:1.15rem 1.2rem}.ops-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.85rem}.ops-field{display:grid;gap:.4rem}.ops-field.full{grid-column:1/-1}.ops-field>span{font-size:.73rem;font-weight:800}.ops-field input,.ops-field select{width:100%;min-height:42px;padding:.65rem .75rem;border:1px solid #dde0e8;border-radius:.7rem;background:var(--nawa-surface,#fff);color:inherit;font:inherit}.ops-field small{color:#8a90a1;font-size:.66rem}.ops-permissions[hidden]{display:none}.ops-permissions{display:grid;gap:.65rem;padding-top:.2rem}.ops-permission-note{padding:.75rem .85rem;border:1px solid #ddd7ff;border-radius:.72rem;color:#6254a7;background:#f8f6ff;font-size:.7rem}.ops-permission-group{border:1px solid #e4e6ed;border-radius:.8rem;overflow:hidden}.ops-permission-group summary{display:flex;align-items:center;justify-content:space-between;padding:.75rem .85rem;background:#fafafd;cursor:pointer;font-size:.75rem;font-weight:800}.ops-permission-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.4rem;padding:.7rem}.ops-permission-item{display:flex;align-items:flex-start;gap:.5rem;padding:.5rem;border-radius:.55rem;background:#fafbfc;font-size:.67rem;cursor:pointer}.ops-permission-item code{display:block;margin-top:.12rem;color:#9095a6;font-size:.58rem}.ops-permission-item input{accent-color:#5b49c6}.ops-modal-actions{display:flex;justify-content:flex-end;gap:.5rem;padding:1rem 1.2rem;border-top:1px solid #ececf2}.ops-warning{display:flex;gap:.7rem;padding:.9rem;border:1px solid #f2d2d2;border-radius:.8rem;color:#8d3333;background:#fff5f5;font-size:.75rem;line-height:1.65}.ops-no-access{padding:1rem 1.15rem;border:1px solid #efd9ae;border-radius:.85rem;color:#7c5818;background:#fff9ed;font-size:.75rem}html[data-theme="dark"] .ops-permission-group summary,body.dark .ops-permission-group summary,html[data-theme="dark"] .ops-permission-item,body.dark .ops-permission-item{background:#26283b}html[data-theme="dark"] .ops-field input,html[data-theme="dark"] .ops-field select,body.dark .ops-field input,body.dark .ops-field select{border-color:#3b3e54;background:#24263a}@media(max-width:760px){.ops-stats,.ops-fields{grid-template-columns:1fr}.ops-toolbar{align-items:stretch;flex-direction:column}.ops-search{max-width:none}.ops-permission-list{grid-template-columns:1fr}.ops-modal-actions{flex-direction:column-reverse}.ops-modal-actions .nawa-button{width:100%}}
+.ops-hero{position:relative;overflow:hidden;display:flex;align-items:center;justify-content:space-between;gap:1.5rem;min-height:188px;padding:1.65rem 2rem;border:1px solid #b8d9ff;border-radius:1.25rem;background:linear-gradient(120deg,#f7fbff 0%,#e7f2ff 52%,#f8fbff 100%)}.ops-hero:before{content:"";position:absolute;inset:auto 30% -85% auto;width:260px;height:260px;border-radius:50%;background:#b9dbff55}.ops-hero-copy,.ops-hero-visual{position:relative}.ops-hero h1{margin:0;color:#0b347d;font-size:1.72rem}.ops-hero p{margin:.55rem 0 1.1rem;color:#49689b}.ops-hero-pills{display:flex;flex-wrap:wrap;gap:.55rem}.ops-hero-pills span{display:inline-flex;align-items:center;gap:.35rem;padding:.48rem .7rem;border-radius:.65rem;background:#ffffffa8;color:#23549b;font-size:.72rem;font-weight:800}.ops-hero-visual{display:flex;align-items:end;justify-content:center;min-width:210px;height:130px}.ops-hero-visual i{position:relative;display:grid;place-items:center;width:72px;height:72px;margin:0 -5px;border-radius:50% 50% 24% 24%;color:#fff;background:linear-gradient(135deg,#1178ed,#0754d4);font-size:2.6rem;box-shadow:0 12px 22px #1476dd38}.ops-hero-visual i:first-child,.ops-hero-visual i:last-child{width:53px;height:53px;transform:translateY(-5px);font-size:1.8rem;opacity:.88}.ops-hero-visual i:last-child{background:linear-gradient(135deg,#8d65ef,#5a33d0)}.ops-hero-visual b{position:absolute;top:0;left:50%;transform:translateX(-50%);color:#ffba25;font-size:2.15rem;filter:drop-shadow(0 5px 4px #d4972c55)}.ops-stats{grid-template-columns:repeat(4,minmax(0,1fr))}.ops-stat{border-color:#dce7f7}.ops-stat>i{color:#0767e8;background:#e7f1ff}.ops-stat:nth-child(2)>i{color:#7440e7;background:#f0eaff}.ops-stat:nth-child(3)>i{color:#08a56d;background:#e2faef}.ops-stat:nth-child(4)>i{color:#ef3d64;background:#ffe9ee}.ops-stat strong{font-size:1.25rem}html[data-theme="dark"] .ops-hero,body.dark .ops-hero{border-color:#1b548e;background:linear-gradient(120deg,#09254a,#071a35 58%,#0d2749)}html[data-theme="dark"] .ops-hero h1,body.dark .ops-hero h1{color:#e6f0ff}html[data-theme="dark"] .ops-hero p,body.dark .ops-hero p{color:#adcaef}html[data-theme="dark"] .ops-hero-pills span,body.dark .ops-hero-pills span{background:#173a67;color:#cce3ff}@media(max-width:760px){.ops-hero{align-items:flex-start;flex-direction:column;padding:1.25rem}.ops-hero-visual{align-self:center}.ops-stats{grid-template-columns:1fr}}
+</style>
+<div class="nawa-page ops-page" dir="rtl">
+    <section class="ops-hero">
+        <div class="ops-hero-copy"><h1>إدارة المشرفين</h1><p>أنشئ حسابات الإدارة، وحدد دور كل مشرف وصلاحياته بدقة.</p><div class="ops-hero-pills"><span><i class="bi bi-shield-check"></i> صلاحيات مرنة</span><span><i class="bi bi-clipboard-data"></i> سجل الأنشطة</span><span><i class="bi bi-person-gear"></i> إدارة آمنة</span></div></div>
+        <div class="ops-hero-visual" aria-hidden="true"><b class="bi bi-crown-fill"></b><i class="bi bi-person-fill"></i><i class="bi bi-person-fill"></i><i class="bi bi-person-fill"></i></div>
+        <?php if ($canCreate): ?><button type="button" class="nawa-button primary" data-new-operator><i class="bi bi-person-plus"></i> إضافة مشرف جديد</button><?php endif; ?>
+    </section>
+
+    <?php if ($successMsg !== ''): ?><div class="nawa-alert success"><i class="bi bi-check2-circle"></i><span><?= nawa_e($successMsg) ?></span></div><?php endif; ?>
+    <?php if ($failureMsg !== ''): ?><div class="nawa-alert danger"><i class="bi bi-exclamation-triangle"></i><span><?= nawa_e($failureMsg) ?></span></div><?php endif; ?>
+
+    <section class="ops-stats">
+        <article class="ops-stat"><i class="bi bi-people"></i><div><span>إجمالي المشرفين</span><strong><?= count($operators) ?></strong></div></article>
+        <article class="ops-stat"><i class="bi bi-shield-check"></i><div><span>مديرو النظام الكاملون</span><strong><?= $fullManagers ?></strong></div></article>
+        <article class="ops-stat"><i class="bi bi-person-check"></i><div><span>الحساب المستخدم الآن</span><strong><?= nawa_e($operator) ?></strong></div></article>
+        <article class="ops-stat"><i class="bi bi-person-x"></i><div><span>صلاحيات مخصصة</span><strong><?= count(array_filter($operators, static fn(array $item): bool => $item['role'] === 'custom')) ?></strong></div></article>
+    </section>
+
+    <?php if (!$canCreate && !$canEdit && !$canDelete): ?><div class="ops-no-access"><i class="bi bi-info-circle"></i> لديك صلاحية مشاهدة قائمة المشرفين فقط.</div><?php endif; ?>
+
+    <section class="nawa-card">
+        <header class="nawa-card-header"><div><h2>حسابات المشرفين</h2><p>كلمات المرور مشفرة ولا يتم عرضها داخل النظام.</p></div></header>
+        <div class="ops-toolbar"><label class="ops-search"><i class="bi bi-search"></i><input type="search" placeholder="ابحث باسم المشرف..." data-operator-search></label><span class="ops-count"><b data-visible-count><?= count($operators) ?></b> حساب</span></div>
+        <?php if ($operators === []): ?>
+            <div class="ops-empty"><i class="bi bi-person-x"></i><p>لا توجد حسابات مشرفين.</p></div>
+        <?php else: ?>
+        <div class="nawa-table-wrap"><table class="nawa-table"><thead><tr><th>المشرف</th><th>الدور</th><th>الصلاحيات النشطة</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody>
+        <?php foreach ($operators as $item):
+            $isCurrent = $item['id'] === $currentOperatorId;
+            $initial = mb_substr($item['username'], 0, 1);
+            $permissionJson = htmlspecialchars(json_encode($item['permissions'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), ENT_QUOTES, 'UTF-8');
+        ?>
+            <tr data-operator-row data-search-value="<?= nawa_e(mb_strtolower($item['username'])) ?>">
+                <td><div class="ops-user"><span class="ops-avatar"><?= nawa_e($initial) ?></span><span><strong><?= nawa_e($item['username']) ?></strong><small>معرّف الحساب #<?= $item['id'] ?></small></span></div></td>
+                <td><span class="ops-role <?= nawa_e($item['role']) ?>"><i class="bi bi-shield-lock"></i><?= nawa_e($roleLabels[$item['role']] ?? $roleLabels['custom']) ?></span></td>
+                <td><span class="ops-count"><?= count($item['permissions']) ?> من <?= count($aclFiles) ?></span></td>
+                <td><?= $isCurrent ? '<span class="nawa-badge success"><i></i> حسابك الحالي</span>' : '<span class="nawa-badge"><i></i> نشط</span>' ?></td>
+                <td><div class="ops-actions">
+                    <?php if ($canEdit): ?><button type="button" class="nawa-button small" data-edit-operator data-id="<?= $item['id'] ?>" data-username="<?= nawa_e($item['username']) ?>" data-role="<?= nawa_e($item['role']) ?>" data-permissions="<?= $permissionJson ?>"><i class="bi bi-pencil"></i> تعديل</button><?php endif; ?>
+                    <?php if ($canDelete && !$isCurrent): ?><button type="button" class="nawa-button danger small" data-delete-operator data-id="<?= $item['id'] ?>" data-username="<?= nawa_e($item['username']) ?>"><i class="bi bi-trash"></i></button><?php endif; ?>
+                </div></td>
+            </tr>
+        <?php endforeach; ?>
+        </tbody></table></div>
+        <?php endif; ?>
+    </section>
+
+    <div class="ops-modal" id="operatorEditor" aria-hidden="true"><div class="ops-dialog" role="dialog" aria-modal="true" aria-labelledby="operatorEditorTitle">
+        <header class="ops-modal-head"><div><h3 id="operatorEditorTitle">إضافة مشرف</h3><p>بيانات الدخول والدور والصلاحيات.</p></div><button type="button" class="ops-close" data-close-modal><i class="bi bi-x-lg"></i></button></header>
+        <form data-operator-form>
+            <div class="ops-form-body">
+                <input type="hidden" name="csrf_token" value="<?= nawa_e($csrf) ?>"><input type="hidden" name="action" value="save"><input type="hidden" name="id" value="0" data-operator-id>
+                <div class="ops-fields">
+                    <label class="ops-field full"><span>اسم المستخدم</span><input type="text" name="username" minlength="3" maxlength="64" autocomplete="off" required><small>حروف وأرقام والرموز _ . @ - بدون مسافات.</small></label>
+                    <label class="ops-field"><span>كلمة المرور</span><input type="password" name="password" minlength="8" maxlength="128" autocomplete="new-password"><small data-password-hint>8 أحرف على الأقل.</small></label>
+                    <label class="ops-field"><span>تأكيد كلمة المرور</span><input type="password" name="password_confirm" minlength="8" maxlength="128" autocomplete="new-password"></label>
+                    <label class="ops-field full"><span>الدور</span><select name="role" data-role-select><option value="full">مدير كامل — جميع الصلاحيات</option><option value="operations">مشرف تشغيل — المستخدمون والفوترة والتقارير</option><option value="readonly">مشاهدة فقط — بدون إضافة أو تعديل أو حذف</option><option value="custom">صلاحيات مخصصة</option></select></label>
+                </div>
+                <div class="ops-permissions" data-custom-permissions hidden>
+                    <div class="ops-permission-note"><i class="bi bi-sliders"></i> فعّل الصفحات التي يمكن لهذا المشرف الوصول إليها. يمكنك تحديد مجموعة كاملة من عنوانها.</div>
+                    <?php foreach ($groupedAcl as $category => $sections): ?>
+                    <details class="ops-permission-group"><summary><span><?= nawa_e($categoryLabels[$category] ?? $category) ?></span><label><input type="checkbox" data-category-toggle="<?= nawa_e($category) ?>"> تحديد الكل</label></summary><div class="ops-permission-list">
+                        <?php foreach ($sections as $section => $files): foreach (array_keys($files) as $file): ?>
+                        <label class="ops-permission-item"><input type="checkbox" name="permissions[]" value="<?= nawa_e($file) ?>" data-permission-category="<?= nawa_e($category) ?>"><span><?= nawa_e(str_replace('_', ' ', $file)) ?><code><?= nawa_e($section) ?></code></span></label>
+                        <?php endforeach; endforeach; ?>
+                    </div></details>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+            <footer class="ops-modal-actions"><button type="button" class="nawa-button" data-close-modal>إلغاء</button><button type="submit" class="nawa-button primary"><i class="bi bi-check2"></i> حفظ المشرف</button></footer>
+        </form>
+    </div></div>
+
+    <div class="ops-modal" id="operatorDelete" aria-hidden="true"><div class="ops-dialog small" role="dialog" aria-modal="true"><header class="ops-modal-head"><div><h3>حذف المشرف</h3><p>هذا الإجراء يزيل الحساب وصلاحياته.</p></div><button type="button" class="ops-close" data-close-modal><i class="bi bi-x-lg"></i></button></header><form data-delete-form><div class="ops-form-body"><div class="ops-warning"><i class="bi bi-exclamation-triangle"></i><span>هل تريد حذف حساب <strong data-delete-name></strong>؟ لن يتمكن من تسجيل الدخول بعد ذلك.</span></div><input type="hidden" name="csrf_token" value="<?= nawa_e($csrf) ?>"><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="0" data-delete-id></div><footer class="ops-modal-actions"><button type="button" class="nawa-button" data-close-modal>إلغاء</button><button type="submit" class="nawa-button danger"><i class="bi bi-trash"></i> حذف الحساب</button></footer></form></div></div>
+</div>
+<?php
+$templatesJson = json_encode($templates, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+$inlineJs = <<<'JS'
+(function () {
+    var root = document.querySelector('.ops-page');
+    if (!root) return;
+    var templates = __TEMPLATES__;
+    var editor = document.getElementById('operatorEditor');
+    var deleteModal = document.getElementById('operatorDelete');
+    var form = root.querySelector('[data-operator-form]');
+    var roleSelect = root.querySelector('[data-role-select]');
+    var permissionPanel = root.querySelector('[data-custom-permissions]');
+    var permissionBoxes = Array.from(root.querySelectorAll('input[name="permissions[]"]'));
+
+    function openModal(modal) { modal.classList.add('show'); modal.setAttribute('aria-hidden', 'false'); document.body.style.overflow = 'hidden'; }
+    function closeModal(modal) { modal.classList.remove('show'); modal.setAttribute('aria-hidden', 'true'); document.body.style.overflow = ''; }
+    function syncGroups() {
+        root.querySelectorAll('[data-category-toggle]').forEach(function (toggle) {
+            var boxes = permissionBoxes.filter(function (box) { return box.dataset.permissionCategory === toggle.dataset.categoryToggle; });
+            toggle.checked = boxes.length > 0 && boxes.every(function (box) { return box.checked; });
+            toggle.indeterminate = boxes.some(function (box) { return box.checked; }) && !toggle.checked;
+        });
+    }
+    function applyPermissions(list) {
+        var allowed = new Set(list || []);
+        permissionBoxes.forEach(function (box) { box.checked = allowed.has(box.value); });
+        syncGroups();
+    }
+    function applyRole() {
+        var role = roleSelect.value;
+        permissionPanel.hidden = role !== 'custom';
+        if (templates[role]) applyPermissions(templates[role]);
+    }
+    function notify(message, error) {
+        if (typeof window.nawaBackupToast === 'function') { window.nawaBackupToast(message, error); return; }
+        var toast = document.querySelector('.toast');
+        if (!toast) { alert(message); return; }
+        var icon = toast.querySelector('i'); var text = toast.querySelector('span');
+        if (icon) icon.className = error ? 'bi bi-exclamation-circle' : 'bi bi-check2-circle';
+        if (text) text.textContent = message; toast.classList.add('show'); setTimeout(function () { toast.classList.remove('show'); }, 3200);
+    }
+    async function submitForm(target) {
+        var submit = target.querySelector('[type="submit"]'); if (submit) submit.disabled = true;
+        try {
+            var response = await fetch('nawa-operators.php?fragment=1&ajax=1', { method: 'POST', body: new FormData(target), credentials: 'same-origin', cache: 'no-store' });
+            var text = await response.text(); var result;
+            try { result = JSON.parse(text); } catch (e) { throw new Error('لم يكتمل رد الخادم.'); }
+            if (!response.ok || !result.ok) throw new Error(result.message || 'تعذر تنفيذ العملية.');
+            document.body.style.overflow = '';
+            if (typeof window.loadSection === 'function') { await window.loadSection('nawa-operators.php?fragment=1'); notify(result.message, false); }
+            else { window.location.href = 'nawa-operators.php'; }
+        } catch (error) { notify(error.message || 'تعذر تنفيذ العملية.', true); if (submit) submit.disabled = false; }
+    }
+
+    root.querySelector('[data-new-operator]')?.addEventListener('click', function () {
+        form.reset(); form.querySelector('[data-operator-id]').value = '0';
+        document.getElementById('operatorEditorTitle').textContent = 'إضافة مشرف';
+        form.querySelector('[name="password"]').required = true; form.querySelector('[name="password_confirm"]').required = true;
+        root.querySelector('[data-password-hint]').textContent = '8 أحرف على الأقل.';
+        roleSelect.value = 'full'; applyRole(); openModal(editor);
+    });
+    root.querySelectorAll('[data-edit-operator]').forEach(function (button) {
+        button.addEventListener('click', function () {
+            form.reset(); form.querySelector('[data-operator-id]').value = button.dataset.id;
+            form.querySelector('[name="username"]').value = button.dataset.username || '';
+            form.querySelector('[name="password"]').required = false; form.querySelector('[name="password_confirm"]').required = false;
+            root.querySelector('[data-password-hint]').textContent = 'اتركها فارغة للإبقاء على كلمة المرور الحالية.';
+            document.getElementById('operatorEditorTitle').textContent = 'تعديل المشرف';
+            roleSelect.value = button.dataset.role || 'custom';
+            var permissions = []; try { permissions = JSON.parse(button.dataset.permissions || '[]'); } catch (e) {}
+            applyPermissions(permissions); permissionPanel.hidden = roleSelect.value !== 'custom';
+            if (roleSelect.value !== 'custom') applyRole(); openModal(editor);
+        });
+    });
+    root.querySelectorAll('[data-delete-operator]').forEach(function (button) {
+        button.addEventListener('click', function () { root.querySelector('[data-delete-id]').value = button.dataset.id; root.querySelector('[data-delete-name]').textContent = button.dataset.username || ''; openModal(deleteModal); });
+    });
+    root.querySelectorAll('[data-close-modal]').forEach(function (button) { button.addEventListener('click', function () { closeModal(button.closest('.ops-modal')); }); });
+    root.querySelectorAll('.ops-modal').forEach(function (modal) { modal.addEventListener('click', function (event) { if (event.target === modal) closeModal(modal); }); });
+    roleSelect?.addEventListener('change', applyRole);
+    permissionBoxes.forEach(function (box) { box.addEventListener('change', function () { roleSelect.value = 'custom'; permissionPanel.hidden = false; syncGroups(); }); });
+    root.querySelectorAll('[data-category-toggle]').forEach(function (toggle) { toggle.addEventListener('change', function () { roleSelect.value = 'custom'; permissionPanel.hidden = false; permissionBoxes.filter(function (box) { return box.dataset.permissionCategory === toggle.dataset.categoryToggle; }).forEach(function (box) { box.checked = toggle.checked; }); syncGroups(); }); });
+    form?.addEventListener('submit', function (event) { event.preventDefault(); submitForm(form); });
+    root.querySelector('[data-delete-form]')?.addEventListener('submit', function (event) { event.preventDefault(); submitForm(event.currentTarget); });
+    root.querySelector('[data-operator-search]')?.addEventListener('input', function (event) { var value = event.target.value.trim().toLocaleLowerCase('ar'); var visible = 0; root.querySelectorAll('[data-operator-row]').forEach(function (row) { var show = !value || (row.dataset.searchValue || '').includes(value); row.hidden = !show; if (show) visible++; }); var count = root.querySelector('[data-visible-count]'); if (count) count.textContent = visible; });
+    root.addEventListener('keydown', function (event) { if (event.key === 'Escape') root.querySelectorAll('.ops-modal.show').forEach(closeModal); });
+})();
+JS;
+$inlineJs = str_replace('__TEMPLATES__', $templatesJson ?: '{}', $inlineJs);
+include '../common/includes/db_close.php';
+if ($fragmentMode) {
+    echo '<script>' . $inlineJs . '</script>';
+} else {
+    print_footer_and_html_epilogue($inlineJs);
+}
+?>

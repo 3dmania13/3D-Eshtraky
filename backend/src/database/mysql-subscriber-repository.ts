@@ -223,10 +223,14 @@ export class MySqlSubscriberRepository implements AuthRepository, SubscriberRepo
               COALESCE(ui.activated_at,ui.first_login_at,ui.creationdate) AS started_at,
               (SELECT COUNT(DISTINCT NULLIF(ra.callingstationid,''))
                  FROM radacct ra USE INDEX (username)
-                WHERE ra.username=ui.username AND ra.acctstoptime IS NULL) AS active_device_count,
+                WHERE ra.username=ui.username
+                  AND ra.acctstoptime IS NULL
+                  AND COALESCE(ra.acctupdatetime,ra.acctstarttime)>=UTC_TIMESTAMP()-INTERVAL 5 MINUTE) AS active_device_count,
               EXISTS(SELECT 1 FROM radacct active_ra USE INDEX (username)
                       WHERE active_ra.username=ui.username
-                        AND active_ra.acctstoptime IS NULL LIMIT 1) AS is_connected,
+                        AND active_ra.acctstoptime IS NULL
+                        AND COALESCE(active_ra.acctupdatetime,active_ra.acctstarttime)>=UTC_TIMESTAMP()-INTERVAL 5 MINUTE
+                      LIMIT 1) AS is_connected,
               EXISTS(SELECT 1 FROM radusergroup rug
                       WHERE rug.username=ui.username
                         AND rug.groupname='daloRADIUS-Disabled-Users') AS is_in_disabled_group
@@ -374,7 +378,8 @@ export class MySqlSubscriberRepository implements AuthRepository, SubscriberRepo
               COALESCE(framedipaddress,'') AS framed_ip,
               COALESCE(callingstationid,'') AS calling_station_id,
               COALESCE(NULLIF(nasipaddress,''),NULLIF(calledstationid,''),'') AS nas_info,
-              acctstoptime IS NULL AS is_active
+              (acctstoptime IS NULL
+                AND COALESCE(acctupdatetime,acctstarttime)>=UTC_TIMESTAMP()-INTERVAL 5 MINUTE) AS is_active
          FROM radacct USE INDEX (username)
         WHERE username=?
         ORDER BY acctstarttime DESC,radacctid DESC LIMIT ?`,
@@ -396,27 +401,46 @@ export class MySqlSubscriberRepository implements AuthRepository, SubscriberRepo
 
   async getDevices(subscriber: SubscriberPrincipal, limit: number): Promise<DeviceRecord[]> {
     const [rows] = await this.pool.query<RowDataPacket[]>(
-      `SELECT ra.callingstationid,MAX(sd.friendly_name) AS friendly_name,
-              COALESCE(MAX(CASE WHEN ra.acctstoptime IS NULL THEN ra.framedipaddress END),
+      `SELECT ra.callingstationid,
+              COALESCE(
+                MAX(sd.friendly_name),
+                (SELECT NULLIF(cd.device_name,'')
+                   FROM communication_devices cd
+                  WHERE BINARY cd.mac_address=BINARY ra.callingstationid
+                    AND NULLIF(cd.device_name,'') IS NOT NULL
+                  ORDER BY cd.last_seen DESC,cd.id DESC
+                  LIMIT 1)
+              ) AS friendly_name,
+              MAX(dsl.selection) AS speed_selection,
+              COALESCE(MAX(CASE WHEN ra.acctstoptime IS NULL
+                    AND COALESCE(ra.acctupdatetime,ra.acctstarttime)>=UTC_TIMESTAMP()-INTERVAL 5 MINUTE
+                    THEN ra.framedipaddress END),
                        SUBSTRING_INDEX(GROUP_CONCAT(ra.framedipaddress ORDER BY ra.acctstarttime DESC),',',1),'') AS ip_address,
-              COALESCE(MAX(CASE WHEN ra.acctstoptime IS NULL THEN ra.acctstarttime END),
+              COALESCE(MAX(CASE WHEN ra.acctstoptime IS NULL
+                    AND COALESCE(ra.acctupdatetime,ra.acctstarttime)>=UTC_TIMESTAMP()-INTERVAL 5 MINUTE
+                    THEN ra.acctstarttime END),
                        MAX(ra.acctstarttime)) AS connection_started_at,
-              MAX(CASE WHEN ra.acctstoptime IS NULL THEN
+              MAX(CASE WHEN ra.acctstoptime IS NULL
+                    AND COALESCE(ra.acctupdatetime,ra.acctstarttime)>=UTC_TIMESTAMP()-INTERVAL 5 MINUTE THEN
                     COALESCE(ra.acctsessiontime,TIMESTAMPDIFF(SECOND,ra.acctstarttime,
                       COALESCE(ra.acctupdatetime,UTC_TIMESTAMP()))) ELSE 0 END) AS duration_seconds,
               MIN(ra.acctstarttime) AS first_seen_at,
               MAX(COALESCE(ra.acctupdatetime,ra.acctstoptime,ra.acctstarttime)) AS last_seen_at,
-              SUM(CASE WHEN ra.acctstoptime IS NULL THEN
+              SUM(CASE WHEN ra.acctstoptime IS NULL
+                    AND COALESCE(ra.acctupdatetime,ra.acctstarttime)>=UTC_TIMESTAMP()-INTERVAL 5 MINUTE THEN
                     COALESCE(ra.input_octets64,ra.acctinputoctets,0)+
                     COALESCE(ra.output_octets64,ra.acctoutputoctets,0) ELSE 0 END) AS current_bytes,
-              MAX(ra.acctstoptime IS NULL) AS is_online
+              MAX(ra.acctstoptime IS NULL
+                  AND COALESCE(ra.acctupdatetime,ra.acctstarttime)>=UTC_TIMESTAMP()-INTERVAL 5 MINUTE) AS is_online
          FROM radacct ra USE INDEX (username)
          LEFT JOIN subscriber_devices sd
            ON sd.username=? AND sd.mac_address=ra.callingstationid
+         LEFT JOIN subscriber_device_speed_limits dsl
+           ON dsl.username=? AND BINARY dsl.mac_address=BINARY ra.callingstationid
         WHERE ra.username=? AND NULLIF(ra.callingstationid,'') IS NOT NULL
         GROUP BY ra.callingstationid
         ORDER BY last_seen_at DESC LIMIT ?`,
-      [subscriber.username, subscriber.username, limit],
+      [subscriber.username, subscriber.username, subscriber.username, limit],
     );
     return rows.map((row) => this.mapDevice(subscriber.username, row));
   }
@@ -438,6 +462,39 @@ export class MySqlSubscriberRepository implements AuthRepository, SubscriberRepo
       [input.subscriber.username, existing.callingStationId, input.friendlyName],
     );
     return { ...existing, friendlyName: input.friendlyName };
+  }
+
+  async setDeviceSpeed(input: {
+    subscriber: SubscriberPrincipal;
+    deviceId: string;
+    selection: string | null;
+  }): Promise<DeviceRecord | null> {
+    if (!/^[a-f0-9]{64}$/.test(input.deviceId)) return null;
+    const devices = await this.getDevices(input.subscriber, 100);
+    const existing = devices.find((device) => device.id === input.deviceId);
+    if (!existing) return null;
+    if (input.selection === null) {
+      await this.pool.execute(
+        "DELETE FROM subscriber_device_speed_limits WHERE username=? AND mac_address=?",
+        [input.subscriber.username, existing.callingStationId],
+      );
+    } else {
+      await this.pool.execute(
+        `INSERT INTO subscriber_device_speed_limits
+          (username,mac_address,selection,updated_at)
+         VALUES (?,?,?,UTC_TIMESTAMP(6))
+         ON DUPLICATE KEY UPDATE selection=VALUES(selection),updated_at=UTC_TIMESTAMP(6)`,
+        [input.subscriber.username, existing.callingStationId, input.selection],
+      );
+    }
+    return { ...existing, speedSelection: input.selection };
+  }
+
+  async invalidateDeviceSpeedApplications(username: string): Promise<void> {
+    await this.pool.execute(
+      "DELETE FROM subscriber_device_speed_applications WHERE username=?",
+      [username],
+    );
   }
 
   async getRecharges(username: string, limit: number): Promise<RechargeRecord[]> {
@@ -534,7 +591,7 @@ export class MySqlSubscriberRepository implements AuthRepository, SubscriberRepo
 
   async getNotifications(username: string, limit: number): Promise<NotificationRecord[]> {
     const [rows] = await this.pool.query<RowDataPacket[]>(
-      `SELECT id,type,title,message,is_read,created_at
+      `SELECT id,type,title,message,link_title,link_url,is_read,created_at
          FROM subscriber_notifications
         WHERE username=? ORDER BY created_at DESC,id DESC LIMIT ?`,
       [username, limit],
@@ -544,6 +601,8 @@ export class MySqlSubscriberRepository implements AuthRepository, SubscriberRepo
       type: String(row.type),
       title: String(row.title),
       body: String(row.message),
+      linkTitle: row.link_title === null ? null : String(row.link_title),
+      linkUrl: row.link_url === null ? null : String(row.link_url),
       isRead: Boolean(row.is_read),
       createdAt: requiredDate(row.created_at, 'created_at'),
     }));
@@ -556,6 +615,99 @@ export class MySqlSubscriberRepository implements AuthRepository, SubscriberRepo
       [notificationId, username],
     );
     return result.affectedRows === 1;
+  }
+
+  async markAllNotificationsRead(username: string): Promise<number> {
+    const [result] = await this.pool.execute<ResultSetHeader>(
+      'UPDATE subscriber_notifications SET is_read=1 WHERE username=? AND is_read=0',
+      [username],
+    );
+    return result.affectedRows;
+  }
+
+  async registerPushToken(input: { username: string; token: string; platform: 'android' }): Promise<void> {
+    await this.pool.execute(
+      `INSERT INTO subscriber_push_tokens (username,token,platform)
+       VALUES (?,?,?)
+       ON DUPLICATE KEY UPDATE username=VALUES(username), platform=VALUES(platform), updated_at=UTC_TIMESTAMP(6)`,
+      [input.username, input.token, input.platform],
+    );
+  }
+
+  async getSpeedSelection(username: string): Promise<string> {
+    const [rows] = await this.pool.execute<RowDataPacket[]>(
+      `SELECT value FROM radreply WHERE username=? AND attribute='Mikrotik-Rate-Limit'
+       ORDER BY id DESC LIMIT 1`, [username],
+    );
+    const value = rows[0]?.value;
+    return typeof value === 'string' && value !== '' ? value : 'open';
+  }
+
+  async setSpeedSelection(input: { username: string; selection: string }): Promise<void> {
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      await connection.execute(
+        "DELETE FROM radreply WHERE username=? AND attribute='Mikrotik-Rate-Limit'", [input.username],
+      );
+      if (input.selection !== 'open') {
+        await connection.execute(
+          "INSERT INTO radreply (username,attribute,op,value) VALUES (?, 'Mikrotik-Rate-Limit', ':=', ?)",
+          [input.username, input.selection],
+        );
+      }
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
+  async getConnectionLimit(username: string): Promise<number | null> {
+    const [rows] = await this.pool.execute<RowDataPacket[]>(
+      `SELECT connection_limit
+         FROM subscriber_connection_limits
+        WHERE username=?
+        LIMIT 1`,
+      [username],
+    );
+    const value = Number(rows[0]?.connection_limit);
+    return Number.isInteger(value) && value > 0 ? value : null;
+  }
+
+  async setConnectionLimit(input: {
+    username: string;
+    limit: number;
+  }): Promise<void> {
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      await connection.execute(
+        `INSERT INTO subscriber_connection_limits
+          (username,connection_limit,updated_at)
+         VALUES (?,?,UTC_TIMESTAMP(6))
+         ON DUPLICATE KEY UPDATE
+           connection_limit=VALUES(connection_limit),updated_at=UTC_TIMESTAMP(6)`,
+        [input.username, input.limit],
+      );
+      await connection.execute(
+        "DELETE FROM radcheck WHERE username=? AND attribute='Simultaneous-Use'",
+        [input.username],
+      );
+      await connection.execute(
+        `INSERT INTO radcheck (username,attribute,op,value)
+         VALUES (?, 'Simultaneous-Use', ':=', ?)`,
+        [input.username, String(input.limit)],
+      );
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
   }
 
   private async findAccount(
@@ -571,6 +723,8 @@ export class MySqlSubscriberRepository implements AuthRepository, SubscriberRepo
     return {
       id: deviceId(username, callingStationId),
       friendlyName: row.friendly_name === null ? null : String(row.friendly_name),
+      speedSelection:
+        row.speed_selection === null ? null : String(row.speed_selection),
       callingStationId,
       ipAddress: String(row.ip_address ?? ''),
       connectionStartedAt: requiredDate(row.connection_started_at, 'connection_started_at'),

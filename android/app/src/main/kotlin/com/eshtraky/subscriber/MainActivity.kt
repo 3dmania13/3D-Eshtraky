@@ -1,4 +1,4 @@
-package com.threedsubscriber.three_d_subscriber
+package com.eshtraky.subscriber
 
 import io.flutter.embedding.android.FlutterActivity
 

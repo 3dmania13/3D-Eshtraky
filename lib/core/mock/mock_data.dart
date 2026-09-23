@@ -97,6 +97,7 @@ abstract final class MockData {
     SubscriberDevice(
       id: 'device-phone',
       friendlyName: 'جوالي',
+      speedSelection: null,
       macAddress: 'A4:C3:F0:21:8B:11',
       ipAddress: '10.10.21.34',
       connectionStartedAt: now.subtract(const Duration(hours: 3, minutes: 18)),
@@ -108,6 +109,7 @@ abstract final class MockData {
     SubscriberDevice(
       id: 'device-tv',
       friendlyName: 'التلفزيون',
+      speedSelection: null,
       macAddress: '70:2C:1F:9D:44:02',
       ipAddress: '10.10.21.42',
       connectionStartedAt: now.subtract(const Duration(hours: 1, minutes: 42)),
@@ -119,6 +121,7 @@ abstract final class MockData {
     SubscriberDevice(
       id: 'device-laptop',
       friendlyName: 'اللابتوب',
+      speedSelection: null,
       macAddress: 'B8:27:EB:6A:19:7C',
       ipAddress: '10.10.21.19',
       connectionStartedAt: now.subtract(const Duration(days: 1, hours: 2)),
@@ -130,6 +133,7 @@ abstract final class MockData {
     SubscriberDevice(
       id: 'device-mohammed',
       friendlyName: 'جوال محمد',
+      speedSelection: null,
       macAddress: '1C:57:DC:82:4A:90',
       ipAddress: '10.10.21.51',
       connectionStartedAt: now.subtract(const Duration(days: 4, hours: 1)),

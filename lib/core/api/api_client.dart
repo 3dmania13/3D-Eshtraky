@@ -93,7 +93,31 @@ class ApiClient {
 
   Future<Map<String, dynamic>> patchJson(String path, {Object? data}) async {
     try {
-      final response = await _dio.patch<Object?>(path, data: data);
+      final response = await _dio.patch<Object?>(
+        path,
+        // Fastify rejects an empty PATCH request before the route handler.
+        // A JSON object keeps the request valid for routes with no payload.
+        data: data ?? const <String, dynamic>{},
+        options: Options(contentType: Headers.jsonContentType),
+      );
+      return _asObject(response.data);
+    } on DioException catch (error) {
+      throw AppException.fromDio(error);
+    }
+  }
+
+  Future<Map<String, dynamic>> putJson(String path, {Object? data}) async {
+    try {
+      final response = await _dio.put<Object?>(path, data: data);
+      return _asObject(response.data);
+    } on DioException catch (error) {
+      throw AppException.fromDio(error);
+    }
+  }
+
+  Future<Map<String, dynamic>> deleteJson(String path) async {
+    try {
+      final response = await _dio.delete<Object?>(path);
       return _asObject(response.data);
     } on DioException catch (error) {
       throw AppException.fromDio(error);

@@ -1,0 +1,570 @@
+<?php
+
+declare(strict_types=1);
+
+include 'library/checklogin.php';
+$operator = (string) ($_SESSION['operator_user'] ?? '');
+include_once '../common/includes/config_read.php';
+include '../common/includes/db_open.php';
+include_once 'include/nawa/vpn.php';
+include_once 'include/nawa/system-health.php';
+
+$fragmentMode = ($_GET['fragment'] ?? '') === '1';
+$ajaxMode = ($_GET['ajax'] ?? '') === '1';
+$isManager = function_exists('nawa_health_manager') && nawa_health_manager($dbSocket);
+nawa_vpn_schema($dbSocket);
+
+function vpn_e($value): string { return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8'); }
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $response = ['ok' => false, 'message' => 'تعذر تنفيذ الطلب.'];
+    try {
+        if (!$isManager) throw new RuntimeException('هذه الصفحة متاحة لمدير النظام فقط.');
+        if (!nawa_vpn_check_csrf_token(isset($_POST['csrf_token']) ? (string) $_POST['csrf_token'] : null)) throw new RuntimeException('انتهت صلاحية الجلسة. حدّث الصفحة ثم حاول مرة أخرى.');
+        $action = (string) ($_POST['action'] ?? '');
+        if ($action === 'save_settings') {
+            $enabled = isset($_POST['enabled']) ? 1 : 0;
+            $mode = in_array((string) ($_POST['mode'] ?? ''), ['dns', 'vpn'], true) ? (string) $_POST['mode'] : 'dns';
+            $scopeType = in_array((string) ($_POST['scope_type'] ?? ''), ['all', 'group', 'user'], true) ? (string) $_POST['scope_type'] : 'all';
+            $scopeValue = trim((string) ($_POST['scope_value'] ?? ''));
+            if ($scopeType !== 'all' && $scopeValue === '') throw new RuntimeException('حدد اسم المستخدم أو المجموعة التي ستطبق عليها السياسة.');
+            $nasIds = array_values(array_unique(array_filter(array_map('intval', (array) ($_POST['nas_ids'] ?? [])), static fn($id) => $id > 0)));
+            if ($nasIds === []) throw new RuntimeException('اختر جهاز MikroTik واحدًا على الأقل.');
+            $dbSocket->query("UPDATE nawa_vpn_settings SET enabled={$enabled},mode=" . nawa_vpn_q($dbSocket, $mode)
+                . ',scope_type=' . nawa_vpn_q($dbSocket, $scopeType) . ',scope_value=' . nawa_vpn_q($dbSocket, $scopeValue)
+                . ',nas_ids=' . nawa_vpn_q($dbSocket, json_encode($nasIds)) . ',updated_by=' . nawa_vpn_q($dbSocket, $operator) . ' WHERE id=1');
+            nawa_vpn_audit($dbSocket, $operator, 'save_settings', $mode, 'success', 'enabled=' . $enabled . '; scope=' . $scopeType . ':' . $scopeValue);
+            $response = ['ok' => true, 'message' => 'تم حفظ إعدادات VPN والحماية. اضغط مزامنة لتطبيقها الآن.'];
+        } elseif ($action === 'add_domain') {
+            $domain = nawa_vpn_normalize_domain((string) ($_POST['domain'] ?? ''));
+            $category = trim((string) ($_POST['category'] ?? 'custom')) ?: 'custom';
+            $result = $dbSocket->query('INSERT INTO nawa_vpn_domains (domain,category,created_by) VALUES (' . nawa_vpn_q($dbSocket, $domain) . ',' . nawa_vpn_q($dbSocket, mb_substr($category, 0, 50)) . ',' . nawa_vpn_q($dbSocket, $operator) . ')');
+            if (DB::isError($result)) throw new RuntimeException('الموقع موجود مسبقًا أو تعذر حفظه.');
+            nawa_vpn_audit($dbSocket, $operator, 'add_domain', $domain, 'success', 'Added to managed DNS block list.');
+            $response = ['ok' => true, 'message' => 'تمت إضافة ' . $domain . ' إلى قائمة الحظر.'];
+        } elseif ($action === 'delete_domain') {
+            $id = max(0, (int) ($_POST['domain_id'] ?? 0));
+            $domain = (string) $dbSocket->getOne("SELECT domain FROM nawa_vpn_domains WHERE id={$id}");
+            if ($id <= 0 || $domain === '') throw new RuntimeException('الموقع المطلوب غير موجود.');
+            $dbSocket->query("DELETE FROM nawa_vpn_domains WHERE id={$id}");
+            nawa_vpn_audit($dbSocket, $operator, 'delete_domain', $domain, 'success', 'Removed from managed DNS block list.');
+            $response = ['ok' => true, 'message' => 'تم حذف ' . $domain . ' من القائمة.'];
+        } elseif ($action === 'sync') {
+            $response = nawa_vpn_sync($dbSocket, $operator);
+            $response['ok'] = count(array_filter((array) ($response['routers'] ?? []), static fn($row) => !empty($row['ok']))) > 0;
+        } else throw new RuntimeException('الإجراء غير معروف.');
+    } catch (Throwable $error) {
+        $response = ['ok' => false, 'message' => $error->getMessage()];
+        nawa_vpn_audit($dbSocket, $operator, (string) ($_POST['action'] ?? 'unknown'), '', 'error', $error->getMessage());
+    }
+    if ($ajaxMode || $fragmentMode) {
+        http_response_code($response['ok'] ? 200 : 422);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode($response, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+}
+
+$settings = nawa_vpn_settings($dbSocket);
+$domains = nawa_vpn_rows($dbSocket, 'SELECT * FROM nawa_vpn_domains ORDER BY created_at DESC,id DESC');
+$detectedDomains = nawa_vpn_rows($dbSocket, "SELECT * FROM nawa_vpn_detected_domains ORDER BY last_seen_at DESC,id DESC");
+$detectedCounts = [
+    'pending' => 0,
+    'blocked' => 0,
+    'reviewing' => 0,
+    'blocked_confirmed' => 0,
+    'allowlisted' => 0,
+];
+foreach ($detectedDomains as $detectedRow) {
+    $detectedStatus = (string) ($detectedRow['status'] ?? 'pending');
+    if (isset($detectedCounts[$detectedStatus])) $detectedCounts[$detectedStatus]++;
+}
+$displayDomains = [];
+foreach (nawa_vpn_family_domains() as $builtinDomain) {
+    $displayDomains[$builtinDomain] = [
+        'domain' => $builtinDomain,
+        'category' => 'محتوى غير مناسب',
+        'source' => 'قائمة حماية مدمجة',
+        'created_at' => '',
+        'manual_id' => 0,
+        'builtin' => true,
+    ];
+}
+foreach ($domains as $domainRow) {
+    $domainName = strtolower(trim((string) ($domainRow['domain'] ?? '')));
+    if ($domainName === '') continue;
+    $categoryLabels = ['adult' => 'محتوى غير مناسب', 'malware' => 'برمجيات ضارة', 'gambling' => 'قمار', 'social' => 'تواصل اجتماعي', 'custom' => 'مخصص'];
+    if (isset($displayDomains[$domainName])) {
+        $displayDomains[$domainName]['source'] = 'مدمج + مضاف يدويًا';
+        $displayDomains[$domainName]['manual_id'] = (int) ($domainRow['id'] ?? 0);
+        $displayDomains[$domainName]['created_at'] = (string) ($domainRow['created_at'] ?? '');
+    } else {
+        $displayDomains[$domainName] = [
+            'domain' => $domainName,
+            'category' => $categoryLabels[(string) ($domainRow['category'] ?? 'custom')] ?? (string) ($domainRow['category'] ?? 'مخصص'),
+            'source' => 'مضاف يدويًا',
+            'created_at' => (string) ($domainRow['created_at'] ?? ''),
+            'manual_id' => (int) ($domainRow['id'] ?? 0),
+            'builtin' => false,
+        ];
+    }
+}
+$displayDomains = array_values($displayDomains);
+usort($displayDomains, static fn($a, $b) => strcasecmp((string) $a['domain'], (string) $b['domain']));
+$routers = nawa_vpn_rows($dbSocket, "SELECT id,nasname,shortname,type,api_username,api_user,COALESCE(api_port,8728) api_port FROM nas WHERE COALESCE(enabled,1)=1 AND LOWER(COALESCE(type,''))='mikrotik' ORDER BY shortname,nasname");
+$audit = nawa_vpn_rows($dbSocket, 'SELECT operator_name,action_name,target_value,result_status,details,created_at FROM nawa_vpn_audit ORDER BY id DESC LIMIT 12');
+$groups = nawa_vpn_rows($dbSocket, 'SELECT DISTINCT groupname FROM radusergroup WHERE groupname IS NOT NULL AND groupname<>\'\' ORDER BY groupname LIMIT 500');
+$activeAddresses = nawa_vpn_active_addresses($dbSocket, (string) $settings['scope_type'], (string) $settings['scope_value']);
+$csrf = nawa_vpn_csrf_token();
+
+/* NAWA_ADBLOCK_COUNTER_20260919 */
+$adblockToday = 0;
+$adblockCounterFile = '/var/lib/3dradius/adblock-counter/stats.json';
+
+if (is_readable($adblockCounterFile)) {
+    $adblockCounterRaw = @file_get_contents($adblockCounterFile);
+
+    if (is_string($adblockCounterRaw) && $adblockCounterRaw !== '') {
+        $adblockCounterData = json_decode($adblockCounterRaw, true);
+
+        if (
+            is_array($adblockCounterData)
+            && ($adblockCounterData['date'] ?? '') === date('Y-m-d')
+        ) {
+            $adblockToday = max(
+                0,
+                (int)($adblockCounterData['today'] ?? 0)
+            );
+        }
+    }
+}
+
+if (!$fragmentMode) {
+    include_once 'lang/main.php';
+    include '../common/includes/layout.php';
+    print_html_prologue('VPN', $langCode, ['static/css/nawa-production.css']);
+}
+?>
+<style>
+.vpn-page{display:grid;gap:16px;color:#202538}.vpn-hero{display:flex;justify-content:space-between;gap:20px;align-items:center;padding:22px;border:1px solid #eadbd9;border-radius:18px;background:linear-gradient(135deg,#fff,#fff5f4)}.vpn-hero h1{margin:4px 0;font-size:28px}.vpn-hero p{margin:0;color:#737b8d;font-size:12px}.vpn-eyebrow{color:#e5221a!important;font-weight:900!important}.vpn-state{display:flex;align-items:center;gap:10px;padding:12px 15px;border-radius:13px;background:#fff;border:1px solid #ececf1}.vpn-state i{font-size:20px;color:#9aa1af}.vpn-state.on i{color:#10a879}.vpn-state span{display:grid;gap:2px}.vpn-state small{color:#9298a8;font-size:10px}.vpn-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(310px,.65fr);gap:16px;align-items:start}.vpn-card{overflow:hidden;border:1px solid #e5e7ed;border-radius:16px;background:#fff;box-shadow:0 8px 28px rgba(23,31,50,.04)}.vpn-card-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:16px 18px;border-bottom:1px solid #eceef3}.vpn-card-head h2{margin:0;font-size:15px}.vpn-card-head p{margin:4px 0 0;color:#8a91a1;font-size:10px}.vpn-body{display:grid;gap:15px;padding:18px}.vpn-toggle{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:14px;border:1px solid #e7e9ef;border-radius:13px}.vpn-toggle span{display:grid;gap:3px}.vpn-toggle small{color:#8a91a2;font-size:10px}.vpn-switch{position:relative;width:48px;height:27px}.vpn-switch input{position:absolute;opacity:0}.vpn-switch i{display:block;width:100%;height:100%;border-radius:999px;background:#cfd3dc;transition:.2s}.vpn-switch i:after{content:"";position:absolute;top:4px;right:4px;width:19px;height:19px;border-radius:50%;background:#fff;box-shadow:0 2px 5px #0002;transition:.2s}.vpn-switch input:checked+i{background:#e5221a}.vpn-switch input:checked+i:after{transform:translateX(-21px)}.vpn-modes{display:grid;grid-template-columns:1fr 1fr;gap:10px}.vpn-mode{position:relative}.vpn-mode input{position:absolute;opacity:0}.vpn-mode span{display:grid;gap:5px;height:100%;padding:15px;border:1px solid #e4e6ec;border-radius:13px;cursor:pointer}.vpn-mode i{font-size:20px;color:#e5221a}.vpn-mode b{font-size:12px}.vpn-mode small{color:#8990a0;font-size:9px;line-height:1.6}.vpn-mode input:checked+span{border-color:#e5221a;background:#fff5f4;box-shadow:0 0 0 2px #fee2e0}.vpn-fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}.vpn-field{display:grid;gap:6px}.vpn-field.full{grid-column:1/-1}.vpn-field>span{font-size:10px;font-weight:900}.vpn-field input,.vpn-field select{min-height:42px;padding:8px 11px;border:1px solid #dfe2e9;border-radius:10px;background:#fff;font:inherit;font-size:11px}.vpn-routers{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.vpn-router{display:flex;align-items:center;gap:9px;padding:11px;border:1px solid #e6e8ee;border-radius:11px}.vpn-router input{accent-color:#e5221a}.vpn-router span{display:grid}.vpn-router b{font-size:10px}.vpn-router small{font-size:9px;color:#8b92a1}.vpn-actions{display:flex;gap:9px;flex-wrap:wrap}.vpn-btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:39px;padding:8px 14px;border:1px solid #dfe2e9;border-radius:10px;background:#fff;color:#3b4150;font:inherit;font-size:10px;font-weight:900;cursor:pointer}.vpn-btn.primary{border-color:#e5221a;background:#e5221a;color:#fff}.vpn-btn:disabled{opacity:.55;cursor:wait}.vpn-note{display:flex;gap:9px;padding:12px;border:1px solid #f0d9ad;border-radius:11px;background:#fff9ed;color:#7e5e24;font-size:10px;line-height:1.7}.vpn-domain-form{display:grid;grid-template-columns:1fr 120px auto;gap:8px}.vpn-domain-tools{display:flex;align-items:center;gap:8px}.vpn-domain-search{flex:1;min-height:40px;padding:8px 12px;border:1px solid #dfe2e9;border-radius:10px;font:inherit;font-size:10px;direction:ltr}.vpn-domain-count{white-space:nowrap;color:#72798a;font-size:9px}.vpn-domain-info{padding:10px 12px;border:1px solid #cbe4f7;border-radius:10px;background:#f2f9fe;color:#35647d;font-size:9px;line-height:1.65}.vpn-domain-list{display:grid;gap:7px;max-height:470px;overflow:auto}.vpn-domain{display:flex;align-items:center;gap:10px;padding:11px;border:1px solid #e9eaf0;border-radius:10px}.vpn-domain[hidden]{display:none}.vpn-domain>i{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;background:#fff0ef;color:#e5221a}.vpn-domain.builtin>i{background:#effbf7;color:#0a9f76}.vpn-domain div{display:grid;gap:2px;min-width:0;flex:1}.vpn-domain b{font-size:11px;direction:ltr;text-align:right;overflow:hidden;text-overflow:ellipsis}.vpn-domain small{font-size:9px;color:#9298a8}.vpn-domain button{width:32px;height:32px;padding:0;color:#d52a24}.vpn-empty{padding:25px;text-align:center;color:#9298a8;font-size:11px}.vpn-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.vpn-stat{padding:12px;border-radius:11px;background:#f7f8fa}.vpn-stat span{display:block;color:#8c93a2;font-size:9px}.vpn-stat b{display:block;margin-top:5px;font-size:17px}.vpn-log{display:grid;gap:0}.vpn-log-row{display:grid;grid-template-columns:105px 90px 1fr;gap:10px;padding:11px 15px;border-top:1px solid #eef0f4;font-size:9px}.vpn-log-row time{direction:ltr;color:#8b92a1}.vpn-log-row b.ok{color:#079669}.vpn-log-row b.error{color:#d92d20}.vpn-toast{display:none;padding:12px 14px;border-radius:11px;font-size:11px;font-weight:800}.vpn-toast.show{display:block}.vpn-toast.ok{border:1px solid #a9e6d4;background:#effbf7;color:#087b5e}.vpn-toast.error{border:1px solid #fac5c2;background:#fff1f0;color:#b42318}@media(max-width:950px){.vpn-grid{grid-template-columns:1fr}}@media(max-width:650px){.vpn-hero{align-items:flex-start;flex-direction:column}.vpn-modes,.vpn-fields,.vpn-routers,.vpn-stats{grid-template-columns:1fr}.vpn-domain-form{grid-template-columns:1fr}.vpn-domain-tools{align-items:stretch;flex-direction:column}.vpn-log-row{grid-template-columns:1fr}.vpn-field.full{grid-column:auto}}
+.vpn-family{display:flex;align-items:center;gap:12px;width:100%;padding:14px;border:1px solid #f3b4af;border-radius:13px;background:linear-gradient(135deg,#fff1f0,#fff8f7);color:#a9211b;text-align:right;cursor:pointer}.vpn-family>i:first-child{display:grid;place-items:center;flex:0 0 40px;width:40px;height:40px;border-radius:11px;background:#e5221a;color:#fff;font-size:18px}.vpn-family span{display:grid;gap:3px;flex:1}.vpn-family b{font-size:12px}.vpn-family small{color:#8d5d59;font-size:9px;line-height:1.55}.vpn-family.active{border-color:#9fdfcb;background:#effbf7;color:#087b5e}.vpn-family.active>i:first-child{background:#0ba77b}.vpn-family:disabled{opacity:.6;cursor:not-allowed}
+.vpn-review-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.vpn-review-filter{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:7px 11px;border:1px solid #e2e5eb;border-radius:9px;background:#fff;color:#555d6d;font:inherit;font-size:9px;font-weight:900;cursor:pointer}
+.vpn-review-filter.active{border-color:#e5221a;background:#fff2f1;color:#b42318}
+.vpn-review-search{min-height:38px;min-width:220px;padding:8px 11px;border:1px solid #dfe2e9;border-radius:10px;font:inherit;font-size:10px;direction:ltr}
+.vpn-review-list{display:grid;gap:8px;max-height:650px;overflow:auto}
+.vpn-review-row{display:grid;grid-template-columns:minmax(180px,1.2fr) minmax(180px,.8fr) auto;gap:12px;align-items:center;padding:12px;border:1px solid #e8eaf0;border-radius:11px}
+.vpn-review-row[hidden]{display:none}
+.vpn-review-main{display:grid;gap:4px;min-width:0}
+.vpn-review-main b{direction:ltr;text-align:right;font-size:11px;overflow:hidden;text-overflow:ellipsis}
+.vpn-review-main small{font-size:9px;color:#8c93a2;line-height:1.55}
+.vpn-review-meta{display:grid;gap:4px;font-size:9px;color:#747b8b}
+.vpn-review-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.vpn-review-status{display:inline-flex;align-items:center;justify-content:center;width:max-content;padding:5px 8px;border-radius:999px;font-size:8px;font-weight:900}
+.vpn-review-status.pending{background:#fff7e6;color:#9a6700}
+.vpn-review-status.blocked{background:#fff0ef;color:#b42318}
+.vpn-review-status.reviewing{background:#eef4ff;color:#3448a8}
+.vpn-review-status.blocked_confirmed{background:#fdecec;color:#8f1712}
+.vpn-review-status.allowlisted{background:#ecfdf5;color:#087b5e}
+.vpn-btn.safe{border-color:#a7e3d1;color:#087b5e;background:#f0fbf7}
+.vpn-btn.danger{border-color:#f1b7b3;color:#b42318;background:#fff5f4}
+@media(max-width:750px){.vpn-review-row{grid-template-columns:1fr}.vpn-review-actions{justify-content:flex-start}.vpn-review-search{width:100%;min-width:0}}
+</style>
+<style>
+/* VPN protection dashboard refresh */
+.vpn-page{color:var(--nawa-ink,#142b50);gap:14px}.vpn-hero{position:relative;overflow:hidden;min-height:150px;padding:24px 28px;border-color:#c9e0ff;background:radial-gradient(circle at 52% 45%,#d7ecff 0,transparent 27%),linear-gradient(120deg,#f9fcff,#e5f2ff 54%,#f6fbff)}.vpn-hero:before{content:"";position:absolute;width:270px;height:270px;left:34%;bottom:-165px;border-radius:50%;background:#1976ed20}.vpn-hero>div{position:relative}.vpn-eyebrow{display:none}.vpn-hero h1{color:#0a347d;font-size:30px}.vpn-hero p{color:#5272a1}.vpn-hero-art{display:flex;align-items:flex-end;justify-content:center;width:270px;height:130px}.vpn-hero-art .vpn-globe{position:absolute;width:68px;height:68px;margin-left:-115px;margin-bottom:3px;border:3px solid #25aaf5;border-radius:50%;background:repeating-linear-gradient(0deg,transparent 0 14px,#25aaf555 15px 16px),repeating-linear-gradient(90deg,transparent 0 16px,#25aaf555 17px 18px);box-shadow:inset 0 0 20px #32aefa77,0 8px 20px #1279da35}.vpn-hero-art .vpn-shield{z-index:2;display:grid;place-items:center;width:91px;height:110px;color:#fff;border:5px solid #84c9ff;border-radius:45% 45% 55% 55%/35% 35% 65% 65%;background:linear-gradient(135deg,#3e9bff,#0754d9);font-size:43px;box-shadow:0 14px 28px #1268d855}.vpn-hero-art .vpn-server{position:absolute;width:74px;height:70px;margin-right:-122px;margin-bottom:2px;border-radius:8px;background:repeating-linear-gradient(0deg,#173b70 0 19px,#071e47 20px 22px);box-shadow:0 12px 22px #082e6d44}.vpn-hero-art .vpn-server:after{content:"•  •";color:#22e39b;letter-spacing:8px;margin:8px;font-size:10px}.vpn-state{min-width:190px;border-color:#d7e8f8;background:#ffffffcf}.vpn-state i{color:#10ba75!important;font-size:35px}.vpn-stats{grid-template-columns:repeat(5,minmax(0,1fr));gap:11px}.vpn-stat{position:relative;padding:15px 14px;border:1px solid #d9e7f7;border-radius:14px;background:#fff;box-shadow:0 7px 20px #235d9e0b}.vpn-stat:before{content:"";display:block;width:34px;height:34px;margin-bottom:9px;border-radius:10px;background:#e5f1ff}.vpn-stat:nth-child(1):before{background:#ffe5e8}.vpn-stat:nth-child(2):before{background:#eee5ff}.vpn-stat:nth-child(3):before{background:#e3f8ef}.vpn-stat:nth-child(4):before{background:#fff1df}.vpn-stat:nth-child(5):before{background:#e5f1ff}.vpn-stat b{color:#102e65;font-size:20px}.vpn-card{border-color:#dbe8f7;border-radius:16px;box-shadow:0 9px 26px #1a4f8b0d}.vpn-card-head{background:linear-gradient(90deg,#fbfdff,#f3f8ff);border-bottom-color:#e3edf8}.vpn-card-head h2{color:#153b79}.vpn-switch input:checked+i{background:#0fbd78}.vpn-mode i{color:#0877ec}.vpn-mode input:checked+span{border-color:#1884ee;background:#f0f8ff;box-shadow:0 0 0 2px #dcedff}.vpn-btn.primary{border-color:#0878ed;background:linear-gradient(135deg,#118af4,#075be0)}.vpn-router input{accent-color:#0d7fed}.vpn-note{border-color:#f4d38b;background:#fff9eb;color:#805b12}.vpn-family{border-color:#b5e5d5;background:linear-gradient(135deg,#effbf7,#f8fffd);color:#087b5e}.vpn-family>i:first-child{background:#0ab77d}.vpn-review-filter.active{border-color:#1684ee;background:#eff7ff;color:#075bd8}html[data-theme="dark"] .vpn-hero,body.dark .vpn-hero{border-color:#174f89;background:radial-gradient(circle at 52% 45%,#0d579b 0,transparent 29%),linear-gradient(120deg,#082348,#061730 54%,#0b274d)}html[data-theme="dark"] .vpn-hero h1,body.dark .vpn-hero h1{color:#e5f1ff}html[data-theme="dark"] .vpn-hero p,body.dark .vpn-hero p{color:#a8c9ef}html[data-theme="dark"] .vpn-state,body.dark .vpn-state{border-color:#214d7c;background:#102c51}html[data-theme="dark"] .vpn-stat,body.dark .vpn-stat{border-color:#21466e;background:#0d2948}html[data-theme="dark"] .vpn-stat b,body.dark .vpn-stat b{color:#eef6ff}html[data-theme="dark"] .vpn-card-head,body.dark .vpn-card-head{background:#102b4c;border-color:#21466e}@media(max-width:1050px){.vpn-stats{grid-template-columns:repeat(3,1fr)}.vpn-hero-art{display:none}}@media(max-width:650px){.vpn-stats{grid-template-columns:1fr 1fr}.vpn-state{width:100%}}
+</style>
+<div class="vpn-page" dir="rtl" data-vpn-page>
+  <section class="vpn-hero">
+    <div><p class="vpn-eyebrow">3D RADIUS NETWORK SECURITY</p><h1>VPN وحماية المحتوى</h1><p>إدارة الشبكة مع حماية متقدمة من VPN والبروكسي والمحتوى الضار.</p></div>
+    <div class="vpn-hero-art" aria-hidden="true"><span class="vpn-globe"></span><span class="vpn-shield"><i class="bi bi-lock-fill"></i></span><span class="vpn-server"></span></div>
+    <div class="vpn-state <?= !empty($settings['enabled']) ? 'on' : '' ?>"><i class="bi bi-shield-check"></i><span><b><?= !empty($settings['enabled']) ? 'الحماية مفعّلة' : 'الحماية متوقفة' ?></b><small>آخر مزامنة: <?= vpn_e($settings['last_sync_at'] ?: 'لم تتم') ?></small></span></div>
+  </section>
+
+  <?php if (!$isManager): ?><div class="vpn-toast show error">هذه الصفحة متاحة لمدير النظام فقط. يمكنك مشاهدة الحالة لكن لا يمكنك تعديلها.</div><?php endif; ?>
+  <div class="vpn-toast" data-vpn-toast></div>
+
+  <section class="vpn-stats">
+    <article class="vpn-stat"><span>النطاقات المحظورة</span><b><?= number_format(count($displayDomains)) ?></b></article>
+    <article class="vpn-stat"><span>المشتركون المشمولون الآن</span><b><?= number_format(count($activeAddresses)) ?></b></article>
+    <article class="vpn-stat"><span>أجهزة MikroTik المحددة</span><b><?= number_format(count($settings['nas_ids_array'])) ?></b></article>
+    <article class="vpn-stat"><span>المحجوب اليوم</span><b data-adblock-today><?= number_format($adblockToday) ?></b></article>
+    <article class="vpn-stat"><span>مواقع قيد المراجعة</span><b><?= number_format($detectedCounts['pending'] + $detectedCounts['reviewing']) ?></b></article>
+  </section>
+
+  <div class="vpn-grid">
+    <section class="vpn-card">
+      <header class="vpn-card-head"><div><h2>سياسة الحماية</h2><p>الحفظ لا يغير الشبكة حتى تضغط «مزامنة الآن».</p></div><i class="bi bi-sliders"></i></header>
+      <form class="vpn-body" method="post" action="nawa-vpn-api.php" data-vpn-settings>
+        <input type="hidden" name="csrf_token" value="<?= vpn_e($csrf) ?>"><input type="hidden" name="action" value="save_settings">
+        <div class="vpn-toggle"><span><b>تشغيل الحماية</b><small>يتم تطبيق السياسة على المشتركين المحددين فقط.</small></span><label class="vpn-switch"><input type="checkbox" name="enabled" value="1"<?= !empty($settings['enabled']) ? ' checked' : '' ?>><i></i></label></div>
+        <div class="vpn-modes">
+          <label class="vpn-mode"><input type="radio" name="mode" value="dns"<?= ($settings['mode'] ?? 'dns') === 'dns' ? ' checked' : '' ?>><span><i class="bi bi-globe2"></i><b>فلترة DNS</b><small>حظر النطاقات من DNS على MikroTik، وهو الخيار الأخف والأكثر أمانًا.</small></span></label>
+          <label class="vpn-mode"><input type="radio" name="mode" value="vpn"<?= ($settings['mode'] ?? '') === 'vpn' ? ' checked' : '' ?>><span><i class="bi bi-shield-lock"></i><b>مسار VPN</b><small>يوجه القائمة المحددة عبر قاعدة WireGuard مجهزة مسبقًا فقط.</small></span></label>
+        </div>
+        <div class="vpn-fields">
+          <label class="vpn-field"><span>تطبيق السياسة على</span><select name="scope_type" data-vpn-scope><option value="all"<?= $settings['scope_type'] === 'all' ? ' selected' : '' ?>>جميع مستخدمي الشبكة المحددة</option><option value="group"<?= $settings['scope_type'] === 'group' ? ' selected' : '' ?>>مجموعة RADIUS</option><option value="user"<?= $settings['scope_type'] === 'user' ? ' selected' : '' ?>>مشترك محدد</option></select></label>
+          <label class="vpn-field" data-vpn-scope-value><span>اسم المستخدم أو المجموعة</span><input name="scope_value" value="<?= vpn_e($settings['scope_value']) ?>" list="vpn-groups" autocomplete="off" placeholder="اكتب الاسم كما هو"><datalist id="vpn-groups"><?php foreach ($groups as $group): ?><option value="<?= vpn_e($group['groupname']) ?>"><?php endforeach; ?></datalist></label>
+          <div class="vpn-field full"><span>أجهزة MikroTik التي ستطبق عليها السياسة</span><div class="vpn-routers"><?php foreach ($routers as $router): $managementConfigured=nawa_vpn_management_connection($router)!==null; $proxyConfigured=nawa_vpn_proxy_connection($router)!==null; $configured = trim((string) ($router['api_username'] ?: $router['api_user'])) !== '' || $managementConfigured || $proxyConfigured; ?><label class="vpn-router"><input type="checkbox" name="nas_ids[]" value="<?= (int) $router['id'] ?>"<?= in_array((int) $router['id'], $settings['nas_ids_array'], true) ? ' checked' : '' ?><?= !$configured ? ' disabled' : '' ?>><i class="bi bi-router"></i><span><b><?= vpn_e($router['shortname'] ?: $router['nasname']) ?></b><small dir="ltr"><?= vpn_e($router['nasname']) ?><?= $managementConfigured ? ' — Management IP تلقائي' : ($proxyConfigured ? ' — Proxy تلقائي' : (!$configured ? ' — API غير مضبوط' : '')) ?></small></span></label><?php endforeach; ?></div></div>
+        </div>
+        <div class="vpn-note"><i class="bi bi-exclamation-triangle"></i><span>وضع VPN لا ينشئ نفقًا أو مفاتيح تلقائيًا. لن يتم تفعيل التوجيه إلا عند وجود قاعدة Mangle معلّمة <b dir="ltr">3DRADIUS-VPN-FILTER-USERS</b>، حتى لا ينقطع الإنترنت.</span></div>
+        <div class="vpn-actions"><button class="vpn-btn primary" type="submit"><i class="bi bi-check2"></i> حفظ الإعدادات</button><button class="vpn-btn" type="button" data-vpn-sync><i class="bi bi-arrow-repeat"></i> مزامنة الآن مع MikroTik</button><button class="vpn-btn" type="button" data-vpn-rollback style="border-color:#efaaa6;color:#b42318"><i class="bi bi-arrow-counterclockwise"></i> تراجع طارئ واستعادة DNS</button></div>
+      </form>
+    </section>
+
+    <section class="vpn-card">
+      <header class="vpn-card-head"><div><h2>جميع المواقع المحظورة مباشرة</h2><p>القائمة المدمجة والمواقع التي أضفتها يدويًا.</p></div><i class="bi bi-ban"></i></header>
+      <div class="vpn-body">
+        <button class="vpn-family <?= !empty($settings['family_filter']) && !empty($settings['enabled']) ? 'active' : '' ?>" type="button" data-family-filter><i class="bi bi-shield-fill-check"></i><span><b><?= !empty($settings['family_filter']) && !empty($settings['enabled']) ? 'الحماية من المحتوى الإباحي مفعّلة' : 'حظر المواقع الإباحية والمحتوى الجنسي' ?></b><small>DNS عائلي مع إجبار DNS وحجب HTTPS وQUIC وDNS المشفر للمشتركين المشمولين.</small></span><i class="bi bi-chevron-left"></i></button>
+        <form class="vpn-domain-form" method="post" action="nawa-vpn-api.php" data-vpn-domain-form><input type="hidden" name="csrf_token" value="<?= vpn_e($csrf) ?>"><input type="hidden" name="action" value="add_domain"><input name="domain" dir="ltr" required placeholder="example.com" autocomplete="off"><select name="category"><option value="custom">مخصص</option><option value="adult">محتوى غير مناسب</option><option value="malware">برمجيات ضارة</option><option value="gambling">قمار</option><option value="social">تواصل اجتماعي</option></select><button class="vpn-btn primary" type="submit"><i class="bi bi-plus-lg"></i> إضافة</button></form>
+        <div class="vpn-domain-tools"><input class="vpn-domain-search" type="search" data-vpn-domain-search placeholder="ابحث باسم الموقع..." autocomplete="off"><span class="vpn-domain-count"><b data-vpn-domain-visible><?= number_format(count($displayDomains)) ?></b> من <?= number_format(count($displayDomains)) ?></span></div>
+        <div class="vpn-domain-info"><i class="bi bi-info-circle"></i> هذه كل النطاقات التي يحظرها 3D Radius مباشرة ويمكن عرضها. عند تفعيل DNS العائلي يحظر Cloudflare أيضًا تصنيفات إضافية متغيرة، لكنه لا يوفر قائمة كاملة قابلة للعرض.</div>
+        <div class="vpn-domain-list" data-vpn-domain-list><?php if ($displayDomains === []): ?><div class="vpn-empty">لا توجد مواقع في قائمة الحظر.</div><?php endif; ?><?php foreach ($displayDomains as $domain): ?><div class="vpn-domain<?= !empty($domain['builtin']) ? ' builtin' : '' ?>" data-vpn-domain-item data-domain="<?= vpn_e(strtolower((string) $domain['domain'])) ?>"><i class="bi <?= !empty($domain['builtin']) ? 'bi-shield-check' : 'bi-globe2' ?>"></i><div><b><?= vpn_e($domain['domain']) ?></b><small><?= vpn_e($domain['category']) ?> · <?= vpn_e($domain['source']) ?><?= $domain['created_at'] !== '' ? ' · ' . vpn_e($domain['created_at']) : '' ?></small></div><?php if ((int) $domain['manual_id'] > 0): ?><button class="vpn-btn" type="button" data-delete-domain="<?= (int) $domain['manual_id'] ?>" title="حذف الإضافة اليدوية"><i class="bi bi-trash"></i></button><?php else: ?><span title="قائمة مدمجة لا تحذف" style="color:#0a9f76"><i class="bi bi-lock-fill"></i></span><?php endif; ?></div><?php endforeach; ?></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="vpn-card">
+    <header class="vpn-card-head">
+      <div>
+        <h2>مراجعة المواقع المكتشفة</h2>
+        <p>المواقع التي اكتشفها رادار الحماية. المواقع المشتبهة لا تُحظر حتى تعتمدها.</p>
+      </div>
+      <i class="bi bi-radar"></i>
+    </header>
+
+    <div class="vpn-body">
+      <div class="vpn-review-head">
+        <button class="vpn-review-filter active" type="button" data-review-filter="all">
+          الكل <?= number_format(count($detectedDomains)) ?>
+        </button>
+        <button class="vpn-review-filter" type="button" data-review-filter="pending">
+          بانتظار الحظر <?= number_format($detectedCounts['pending']) ?>
+        </button>
+        <button class="vpn-review-filter" type="button" data-review-filter="blocked">
+          محظور تلقائيًا <?= number_format($detectedCounts['blocked']) ?>
+        </button>
+        <button class="vpn-review-filter" type="button" data-review-filter="reviewing">
+          قيد المراجعة <?= number_format($detectedCounts['reviewing']) ?>
+        </button>
+        <button class="vpn-review-filter" type="button" data-review-filter="blocked_confirmed">
+          محظور مؤكد <?= number_format($detectedCounts['blocked_confirmed']) ?>
+        </button>
+        <button class="vpn-review-filter" type="button" data-review-filter="allowlisted">
+          مسموح <?= number_format($detectedCounts['allowlisted']) ?>
+        </button>
+
+        <input
+          class="vpn-review-search"
+          type="search"
+          data-review-search
+          placeholder="بحث باسم الموقع..."
+          autocomplete="off"
+        >
+      </div>
+
+      <div class="vpn-domain-info">
+        <i class="bi bi-info-circle"></i>
+        الموقع المكتشف يبقى محظورًا أثناء الفحص. لا يتم فتحه إلا بعد اختيار «فتح واعتماد».
+        المواقع المسموحة تبقى في Allowlist، ويمكن إعادتها للحظر في أي وقت بواسطة «حظر من جديد».
+      </div>
+
+      <div class="vpn-review-list" data-review-list>
+        <?php if ($detectedDomains === []): ?>
+          <div class="vpn-empty">لم يكتشف الرادار مواقع للمراجعة حتى الآن.</div>
+        <?php endif; ?>
+
+        <?php foreach ($detectedDomains as $detected):
+          $reviewStatus = (string) ($detected['status'] ?? 'pending');
+          $reviewLabels = [
+              'pending' => 'بانتظار الحظر',
+              'blocked' => 'محظور تلقائيًا',
+              'reviewing' => 'قيد المراجعة',
+              'blocked_confirmed' => 'محظور مؤكد',
+              'allowlisted' => 'مسموح',
+          ];
+          $reviewLabel = $reviewLabels[$reviewStatus] ?? $reviewStatus;
+        ?>
+          <div
+            class="vpn-review-row"
+            data-review-item
+            data-review-status="<?= vpn_e($reviewStatus) ?>"
+            data-review-domain="<?= vpn_e(strtolower((string) $detected['domain'])) ?>"
+          >
+            <div class="vpn-review-main">
+              <b><?= vpn_e($detected['domain']) ?></b>
+              <span class="vpn-review-status <?= vpn_e($reviewStatus) ?>"><?= vpn_e($reviewLabel) ?></span>
+              <small>
+                المصدر: <?= vpn_e($detected['source'] ?: 'hagezi_nsfw') ?>
+                · أول ظهور: <?= vpn_e($detected['first_seen_at']) ?>
+                · آخر ظهور: <?= vpn_e($detected['last_seen_at']) ?>
+              </small>
+            </div>
+
+            <div class="vpn-review-meta">
+              <span><b>الشبكات:</b> <?= vpn_e($detected['networks'] ?: '-') ?></span>
+              <span><b>مرات الرصد:</b> <?= number_format((int) $detected['seen_count']) ?></span>
+              <?php if (!empty($detected['reviewed_by'])): ?>
+                <span><b>راجعه:</b> <?= vpn_e($detected['reviewed_by']) ?> · <?= vpn_e($detected['reviewed_at']) ?></span>
+              <?php endif; ?>
+              <?php if (!empty($detected['sample_hosts'])): ?>
+                <span dir="ltr" title="<?= vpn_e($detected['sample_hosts']) ?>">
+                  <?= vpn_e(mb_strimwidth((string) $detected['sample_hosts'], 0, 90, '…')) ?>
+                </span>
+              <?php endif; ?>
+            </div>
+
+            <div class="vpn-review-actions">
+              <?php if ($reviewStatus === 'pending'): ?>
+                <form method="post" action="nawa-vpn-api.php" style="display:inline-flex">
+                  <input type="hidden" name="csrf_token" value="<?= vpn_e($csrf) ?>">
+                  <input type="hidden" name="action" value="confirm_detected_block">
+                  <input type="hidden" name="detected_id" value="<?= (int) $detected['id'] ?>">
+                  <button class="vpn-btn danger" type="submit" onclick="return window.confirm('هل تريد تأكيد حظر هذا الموقع؟')" >
+                  <i class="bi bi-ban"></i> حظر الآن
+                  </button>
+                </form>
+              <?php endif; ?>
+
+              <?php if (in_array($reviewStatus, ['blocked','blocked_confirmed'], true)): ?>
+                <form method="post" action="nawa-vpn-api.php" style="display:inline-flex">
+                  <input type="hidden" name="csrf_token" value="<?= vpn_e($csrf) ?>">
+                  <input type="hidden" name="action" value="review_detected_domain">
+                  <input type="hidden" name="detected_id" value="<?= (int) $detected['id'] ?>">
+                  <button class="vpn-btn" type="submit" onclick="return window.confirm('سيتم فتح الموقع مؤقتًا أثناء الفحص. هل تريد المتابعة؟')" >
+                  <i class="bi bi-search"></i> فحص الموقع
+                  </button>
+                </form>
+              <?php endif; ?>
+
+              <?php if ($reviewStatus === 'reviewing'): ?>
+                <a
+                  class="vpn-btn"
+                  data-review-open-site
+                  href="<?= vpn_e('https://' . $detected['domain']) ?>"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <i class="bi bi-box-arrow-up-right"></i> فتح الموقع
+                </a>
+                <form method="post" action="nawa-vpn-api.php" style="display:inline-flex">
+                  <input type="hidden" name="csrf_token" value="<?= vpn_e($csrf) ?>">
+                  <input type="hidden" name="action" value="approve_detected_allowlist">
+                  <input type="hidden" name="detected_id" value="<?= (int) $detected['id'] ?>">
+                  <button class="vpn-btn safe" type="submit" onclick="return window.confirm('سيتم فتح الموقع واعتماده كمسموح. هل أنت متأكد؟')" >
+                  <i class="bi bi-check2-circle"></i> فتح واعتماد
+                  </button>
+                </form>
+
+                <form method="post" action="nawa-vpn-api.php" style="display:inline-flex">
+                  <input type="hidden" name="csrf_token" value="<?= vpn_e($csrf) ?>">
+                  <input type="hidden" name="action" value="confirm_detected_block">
+                  <input type="hidden" name="detected_id" value="<?= (int) $detected['id'] ?>">
+                  <button class="vpn-btn danger" type="submit" onclick="return window.confirm('هل تريد تأكيد حظر هذا الموقع؟')" >
+                  <i class="bi bi-shield-fill-x"></i> تأكيد الحظر
+                  </button>
+                </form>
+              <?php endif; ?>
+
+              <?php if ($reviewStatus === 'allowlisted'): ?>
+                <form method="post" action="nawa-vpn-api.php" style="display:inline-flex">
+                  <input type="hidden" name="csrf_token" value="<?= vpn_e($csrf) ?>">
+                  <input type="hidden" name="action" value="reblock_detected_domain">
+                  <input type="hidden" name="detected_id" value="<?= (int) $detected['id'] ?>">
+                  <button class="vpn-btn danger" type="submit" onclick="return window.confirm('سيتم إعادة حظر الموقع. هل تريد المتابعة؟')" >
+                  <i class="bi bi-ban"></i> حظر من جديد
+                  </button>
+                </form>
+              <?php endif; ?>
+            </div>
+          </div>
+        <?php endforeach; ?>
+      </div>
+    </div>
+  </section>
+
+  <section class="vpn-card"><header class="vpn-card-head"><div><h2>سجل عمليات VPN</h2><p>آخر تغييرات ومزامنات الصفحة.</p></div><span><?= vpn_e($settings['last_sync_message'] ?: 'لا توجد مزامنة سابقة') ?></span></header><div class="vpn-log"><?php if ($audit === []): ?><div class="vpn-empty">لا توجد عمليات مسجلة.</div><?php endif; ?><?php foreach ($audit as $row): ?><div class="vpn-log-row"><time><?= vpn_e($row['created_at']) ?></time><b class="<?= $row['result_status'] === 'success' ? 'ok' : 'error' ?>"><?= vpn_e($row['action_name']) ?></b><span><?= vpn_e($row['details']) ?></span></div><?php endforeach; ?></div></section>
+</div>
+<script>
+(function(){
+  var root=document.querySelector('[data-vpn-page]'); if(!root)return;
+  var toast=root.querySelector('[data-vpn-toast]');
+  function notify(message,error){toast.textContent=message;toast.className='vpn-toast show '+(error?'error':'ok');window.setTimeout(function(){toast.className='vpn-toast';},5000)}
+  async function request(data){var response=await fetch('nawa-vpn-api.php',{method:'POST',body:data,credentials:'same-origin',cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest'}});var text=await response.text(),result;try{result=JSON.parse(text)}catch(parseError){throw new Error('الخادم أعاد استجابة غير صحيحة. أعد نشر ملفات VPN ثم حدّث الصفحة.')}if(!response.ok||!result.ok)throw new Error(result.message||'تعذر تنفيذ العملية.');return result}
+
+  /* REVIEW_FORM_HANDLER_V2 */
+  root.addEventListener('submit',async function(event){
+    var form=event.target;
+    if(!(form instanceof HTMLFormElement))return;
+
+    var actionInput=form.querySelector('input[name="action"]');
+    if(!actionInput)return;
+
+    var action=actionInput.value;
+    var actions=[
+      'review_detected_domain',
+      'approve_detected_allowlist',
+      'confirm_detected_block',
+      'reblock_detected_domain'
+    ];
+
+    if(actions.indexOf(action)===-1)return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+
+    var button=form.querySelector('[type="submit"]');
+    var row=form.closest('[data-review-item]');
+    var domain=row?(row.dataset.reviewDomain||''):'';
+    var reviewWindow=null;
+
+    if(button)button.disabled=true;
+
+    /*
+     * Open a blank tab immediately so the browser popup blocker
+     * allows us to redirect it after the server finishes syncing.
+     */
+    if(action==='review_detected_domain'&&domain){
+      /* لا نفتح الموقع تلقائياً؛ الفتح يتم فقط من زر فتح الموقع. */
+    }
+
+    try{
+      var result=await request(new FormData(form));
+
+      notify(result.message||'تم تنفيذ العملية.',false);
+
+      if(action==='review_detected_domain'){
+        /* الموقع أصبح قيد الفحص ومفتوحاً مؤقتاً، بدون فتح تبويب تلقائياً. */
+      }
+
+      window.nawaFragmentCache&&window.nawaFragmentCache.clear();
+
+      if(typeof window.loadSection==='function'){
+        await window.loadSection('nawa-vpn.php?fragment=1');
+      }else{
+        window.setTimeout(function(){window.location.reload();},400);
+      }
+    }catch(error){
+      if(reviewWindow&&!reviewWindow.closed)reviewWindow.close();
+      notify(error.message||'تعذر تنفيذ العملية.',true);
+      if(button)button.disabled=false;
+    }
+  },true);
+  async function submit(form){var button=form.querySelector('[type="submit"]');if(button)button.disabled=true;try{var result=await request(new FormData(form));notify(result.message,false);window.nawaFragmentCache&&window.nawaFragmentCache.clear();await window.loadSection('nawa-vpn.php?fragment=1')}catch(error){notify(error.message||'تعذر تنفيذ العملية.',true);if(button)button.disabled=false}}
+  root.querySelectorAll('[data-vpn-settings],[data-vpn-domain-form]').forEach(function(form){form.addEventListener('submit',function(event){event.preventDefault();event.stopImmediatePropagation();if(form.matches('[data-vpn-settings]')){var enabled=form.querySelector('[name="enabled"]');if(enabled&&!enabled.checked&&!window.confirm('مفتاح الحماية مقفول. حفظ هذه الإعدادات سيوقف الحماية ويعيد DNS السابق. هل تريد المتابعة؟'))return}submit(form)})});
+  var scope=root.querySelector('[data-vpn-scope]'),scopeValue=root.querySelector('[data-vpn-scope-value]');function updateScope(){if(scopeValue)scopeValue.style.display=scope&&scope.value==='all'?'none':'grid'}if(scope){scope.addEventListener('change',updateScope);updateScope()}
+  var domainSearch=root.querySelector('[data-vpn-domain-search]'),domainVisible=root.querySelector('[data-vpn-domain-visible]'),domainItems=Array.from(root.querySelectorAll('[data-vpn-domain-item]'));function filterDomains(){var query=(domainSearch?.value||'').trim().toLowerCase(),visible=0;domainItems.forEach(function(item){var show=!query||(item.dataset.domain||'').includes(query);item.hidden=!show;if(show)visible++});if(domainVisible)domainVisible.textContent=visible.toLocaleString('en-US')}if(domainSearch){domainSearch.addEventListener('input',filterDomains);filterDomains()}
+  root.querySelector('[data-vpn-sync]')?.addEventListener('click',async function(){var button=this;if(!window.confirm('سيتم تطبيق السياسة المحفوظة على أجهزة MikroTik المحددة فقط. هل تريد المتابعة؟'))return;button.disabled=true;var data=new FormData();data.append('csrf_token',<?= json_encode($csrf, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>);data.append('action','sync');try{var result=await request(data);notify(result.message,false);window.nawaFragmentCache&&window.nawaFragmentCache.clear();await window.loadSection('nawa-vpn.php?fragment=1')}catch(error){notify(error.message||'تعذرت المزامنة.',true);button.disabled=false}});
+  root.querySelector('[data-family-filter]')?.addEventListener('click',async function(){var button=this;if(!window.confirm('سيتم تفعيل DNS العائلي على أجهزة MikroTik المحددة وتطبيقه على جميع المشتركين النشطين. هل تريد المتابعة؟'))return;button.disabled=true;var data=new FormData();data.append('csrf_token',<?= json_encode($csrf, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>);data.append('action','enable_family_filter');try{var result=await request(data);notify(result.message,false);window.nawaFragmentCache&&window.nawaFragmentCache.clear();await window.loadSection('nawa-vpn.php?fragment=1')}catch(error){notify(error.message||'تعذر تفعيل الحماية العائلية.',true);button.disabled=false}});
+  root.querySelector('[data-vpn-rollback]')?.addEventListener('click',async function(){var button=this;if(!window.confirm('سيتم إيقاف حماية 3D Radius واستعادة DNS السابق على كل الأجهزة المحددة. هل تريد التراجع؟'))return;if(!window.confirm('تأكيد أخير: لن تتأثر قواعد MikroTik الأخرى، وسيتم تعطيل قواعد 3D Radius فقط.'))return;button.disabled=true;var data=new FormData();data.append('csrf_token',<?= json_encode($csrf, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>);data.append('action','rollback');try{var result=await request(data);notify(result.message,false);window.nawaFragmentCache&&window.nawaFragmentCache.clear();await window.loadSection('nawa-vpn.php?fragment=1')}catch(error){notify(error.message||'تعذر إكمال التراجع.',true);button.disabled=false}});
+  var reviewFilter='all',reviewSearch=root.querySelector('[data-review-search]'),reviewItems=Array.from(root.querySelectorAll('[data-review-item]'));
+  function filterReview(){
+    var query=(reviewSearch?.value||'').trim().toLowerCase();
+    reviewItems.forEach(function(item){
+      var status=item.dataset.reviewStatus||'pending',domain=item.dataset.reviewDomain||'';
+      item.hidden=!((reviewFilter==='all'||status===reviewFilter)&&(!query||domain.includes(query)));
+    });
+  }
+  root.querySelectorAll('[data-review-filter]').forEach(function(button){
+    button.addEventListener('click',function(){
+      root.querySelectorAll('[data-review-filter]').forEach(function(b){b.classList.remove('active')});
+      button.classList.add('active');
+      reviewFilter=button.dataset.reviewFilter||'all';
+      filterReview();
+    });
+  });
+  if(reviewSearch)reviewSearch.addEventListener('input',filterReview);
+
+  root.addEventListener('click',async function(event){
+    var target=event.target instanceof Element?event.target:null;
+    if(!target)return;
+
+    var button=target.closest('[data-review-action]');
+    if(!button||!root.contains(button)||button.disabled)return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    var action=button.dataset.reviewAction,id=button.dataset.detectedId,domain=button.dataset.detectedDomain||'الموقع';
+    var questions={
+      review_detected_domain:'سيبقى '+domain+' محظورًا أثناء المراجعة. هل تريد وضعه قيد الفحص؟',
+      approve_detected_allowlist:'تأكد أنك فحصت '+domain+' وأنه ليس موقعًا إباحيًا. سيتم فتحه للمشتركين ووضعه في قائمة السماح. هل تريد المتابعة؟',
+      confirm_detected_block:'سيتم تأكيد أن '+domain+' يجب أن يبقى محظورًا. هل تريد المتابعة؟',
+      reblock_detected_domain:'سيتم إزالة '+domain+' من قائمة السماح وإعادته للحظر على الشبكات. هل تريد المتابعة؟'
+    };
+
+    if(!window.confirm(questions[action]||'هل تريد تنفيذ العملية على '+domain+'؟'))return;
+
+    var data=new FormData();
+    data.append('csrf_token',<?= json_encode($csrf, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>);
+    data.append('action',action);
+    data.append('detected_id',id);
+    button.disabled=true;
+
+    try{
+      var result=await request(data);
+      notify(result.message,false);
+      window.nawaFragmentCache&&window.nawaFragmentCache.clear();
+      await window.loadSection('nawa-vpn.php?fragment=1');
+    }catch(error){
+      notify(error.message||'تعذر تنفيذ العملية.',true);
+      button.disabled=false;
+    }
+  });
+
+  root.querySelectorAll('[data-delete-domain]').forEach(function(button){button.addEventListener('click',async function(){if(!window.confirm('حذف الموقع من قائمة الحظر؟'))return;var data=new FormData();data.append('csrf_token',<?= json_encode($csrf, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>);data.append('action','delete_domain');data.append('domain_id',button.dataset.deleteDomain);button.disabled=true;try{await request(data);window.nawaFragmentCache&&window.nawaFragmentCache.clear();await window.loadSection('nawa-vpn.php?fragment=1')}catch(error){notify(error.message||'تعذر الحذف.',true);button.disabled=false}})});
+
+  /* NAWA_ADBLOCK_LIVE_STATS_20260919 */
+  if(window.nawaAdblockStatsTimer){
+    window.clearInterval(window.nawaAdblockStatsTimer);
+    window.nawaAdblockStatsTimer=null;
+  }
+
+  function formatAdblockNumber(value){
+    var number=Number(value);
+    if(!Number.isFinite(number)||number<0)number=0;
+    return Math.trunc(number).toLocaleString('en-US');
+  }
+
+  async function refreshAdblockStats(){
+    try{
+      var response=await fetch(
+        'nawa-adblock-stats.php?_=' + Date.now(),
+        {
+          method:'GET',
+          credentials:'same-origin',
+          cache:'no-store',
+          headers:{'X-Requested-With':'XMLHttpRequest'}
+        }
+      );
+
+      if(!response.ok)return;
+
+      var result=await response.json();
+      if(!result||!result.ok)return;
+
+      var currentRoot=document.querySelector('[data-vpn-page]');
+      if(!currentRoot)return;
+
+      var today=currentRoot.querySelector('[data-adblock-today]');
+      var week=currentRoot.querySelector('[data-adblock-week]');
+      var month=currentRoot.querySelector('[data-adblock-month]');
+
+      if(today)today.textContent=formatAdblockNumber(result.today);
+      if(week)week.textContent=formatAdblockNumber(result.week);
+      if(month)month.textContent=formatAdblockNumber(result.month);
+    }catch(error){
+      /* Keep the last displayed values if the live request fails. */
+    }
+  }
+
+  refreshAdblockStats();
+
+  window.nawaAdblockStatsTimer=window.setInterval(
+    refreshAdblockStats,
+    5000
+  );
+
+})();
+</script>
+<?php if (!$fragmentMode) print_footer_and_html_epilogue(); ?>

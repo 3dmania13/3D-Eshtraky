@@ -1,0 +1,186 @@
+<?php
+@ini_set('pcre.jit', '0');
+date_default_timezone_set('Asia/Aden');
+include('library/checklogin.php');
+include_once('../common/includes/config_read.php');
+include('../common/includes/db_open.php');
+require_once('user-usage-data.php');
+require_once('nawa-usage-sessions.php');
+
+$username = trim((string) ($_GET['username'] ?? ''));
+$report = $username !== ''
+    ? nawa_usage_report($dbSocket, $username, (string) ($_GET['from'] ?? ''), (string) ($_GET['to'] ?? ''))
+    : null;
+$selectedDay = nawa_usage_valid_date($_GET['day'] ?? '');
+$selectedDay = $selectedDay ? $selectedDay->format('Y-m-d') : null;
+$sessionDetails = null;
+$sessionError = false;
+if ($report !== null) {
+    if ($selectedDay !== null && ($selectedDay < $report['from'] || $selectedDay > $report['to'])) $selectedDay = null;
+    try {
+        $sessionCounts = nawa_usage_session_counts($dbSocket, $username, $report['from'], $report['to']);
+        foreach ($report['days'] as &$usageDay) $usageDay['session_count'] = $sessionCounts['days'][$usageDay['date']] ?? 0;
+        unset($usageDay);
+        $report['sessions'] = $sessionCounts['unique'];
+        if ($selectedDay !== null) $sessionDetails = nawa_usage_day_sessions($dbSocket, $username, $selectedDay, (int) ($_GET['session_page'] ?? 1));
+    } catch (Throwable $error) {
+        $sessionError = true;
+        error_log('Usage session details: ' . $error->getMessage());
+    }
+}
+include('../common/includes/db_close.php');
+
+if ($report === null):
+?>
+<div class="nawa-page"><section class="nawa-page-header"><div><h1>تفاصيل الاستخدام</h1><p>تعذر العثور على المشترك المطلوب.</p></div><button class="nawa-button" type="button" onclick="loadSection('nawa-users.php?fragment=1')"><i class="bi bi-arrow-right"></i> رجوع للمشتركين</button></section><div class="nawa-empty"><i class="bi bi-person-x"></i>الحساب غير موجود أو ليس من حسابات المشتركين.</div></div>
+<?php return; endif;
+
+$subscriber = $report['subscriber'];
+$isCard = ($subscriber['account_type'] ?? '') === 'card';
+$cardSearch = $isCard ? trim((string) ($_GET['card_search'] ?? '')) : '';
+$cardPage = $isCard ? max(1, (int) ($_GET['card_page'] ?? 1)) : 1;
+$returnUrl = $isCard
+    ? 'nawa-card-recharge.php?fragment=1&card=' . rawurlencode($cardSearch) . '&page=' . $cardPage
+    : 'nawa-users.php?fragment=1';
+$usageContext = $isCard
+    ? '&source=card&card_search=' . rawurlencode($cardSearch) . '&card_page=' . $cardPage
+    : '';
+$fullname = trim((string) ($subscriber['fullname'] ?? '')) ?: ($isCard ? 'كرت شحن' : 'بدون اسم مسجل');
+$quota = (float) ($subscriber['quota_bytes'] ?? 0);
+$used = (float) ($subscriber['used_bytes'] ?? 0);
+$remaining = $quota > 0 ? max(0, $quota - $used) : null;
+$maxDaily = max(1, (float) max(array_column($report['days'], 'total_bytes')));
+$pdfUrl = 'nawa-user-usage-pdf.php?' . http_build_query(['username' => $username, 'from' => $report['from'], 'to' => $report['to']]);
+$daysReversed = array_reverse($report['days']);
+$usageBaseUrl = 'nawa-user-usage.php?' . http_build_query(['fragment' => 1, 'username' => $username, 'from' => $report['from'], 'to' => $report['to']]) . $usageContext;
+$selectedSummary = null;
+foreach ($report['days'] as $usageDay) if ($usageDay['date'] === $selectedDay) $selectedSummary = $usageDay;
+$chartDayCount = max(1, count($report['days']));
+$chartWidth = max(720, $chartDayCount * 96);
+$chartHeight = 290;
+$chartPaddingX = 42;
+$chartPaddingTop = 24;
+$chartPaddingBottom = 42;
+$chartPlotHeight = $chartHeight - $chartPaddingTop - $chartPaddingBottom;
+$chartStep = $chartDayCount > 1 ? ($chartWidth - ($chartPaddingX * 2)) / ($chartDayCount - 1) : 0;
+$chartMax = max(1, (float) max(array_column($report['days'], 'total_bytes')));
+$downloadPoints = [];
+$uploadPoints = [];
+$chartDots = [];
+foreach ($report['days'] as $chartIndex => $chartDay) {
+    $chartX = $chartDayCount > 1 ? $chartPaddingX + ($chartIndex * $chartStep) : $chartWidth / 2;
+    $downloadY = $chartPaddingTop + $chartPlotHeight - (($chartDay['download_bytes'] / $chartMax) * $chartPlotHeight);
+    $uploadY = $chartPaddingTop + $chartPlotHeight - (($chartDay['upload_bytes'] / $chartMax) * $chartPlotHeight);
+    $downloadPoints[] = number_format($chartX, 2, '.', '') . ',' . number_format($downloadY, 2, '.', '');
+    $uploadPoints[] = number_format($chartX, 2, '.', '') . ',' . number_format($uploadY, 2, '.', '');
+    $chartDots[] = ['x' => $chartX, 'download_y' => $downloadY, 'upload_y' => $uploadY, 'day' => $chartDay];
+}
+$downloadAreaPoints = $chartPaddingX . ',' . ($chartHeight - $chartPaddingBottom) . ' ' . implode(' ', $downloadPoints) . ' ' . ($chartWidth - $chartPaddingX) . ',' . ($chartHeight - $chartPaddingBottom);
+?>
+<style>
+.usage-page{display:grid;gap:16px}.usage-identity{display:flex;align-items:center;gap:12px}.usage-avatar{display:grid;place-items:center;width:46px;height:46px;border-radius:14px;background:#fff0ef;color:#e5221a;font-size:18px;font-weight:900}.usage-identity b{display:block;font-size:14px}.usage-identity small{display:block;margin-top:4px;color:#858d9e;font-size:10px}.usage-period{display:flex;align-items:end;gap:9px;padding:13px 15px;border:1px solid #e4e7ec;border-radius:14px;background:#fff}.usage-period label{display:grid;gap:5px;color:#737c8d;font-size:9px;font-weight:800}.usage-period input{border:1px solid #dfe3e9;border-radius:9px;padding:9px 10px;color:#25272c;font-size:10px}.usage-presets{display:flex;gap:6px}.usage-presets button{border:1px solid #e0e3e9;border-radius:8px;background:#f8f9fb;padding:9px 10px;color:#5e6675;font-size:9px;font-weight:800;cursor:pointer}.usage-presets button:hover{border-color:#e5221a;color:#e5221a}.usage-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.usage-metric,.usage-card{background:#fff;border:1px solid #e5e8ed;border-radius:17px;box-shadow:0 8px 27px rgba(25,26,29,.04)}.usage-metric{padding:17px}.usage-metric span{display:flex;align-items:center;justify-content:space-between;color:#858d9d;font-size:10px}.usage-metric i{display:grid;place-items:center;width:32px;height:32px;border-radius:10px;background:#fff0ef;color:#e5221a;font-size:15px}.usage-metric strong{display:block;margin-top:8px;font-size:20px}.usage-metric small{color:#8f96a4;font-size:9px}.usage-card{overflow:hidden}.usage-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:17px 19px;border-bottom:1px solid #eceef2}.usage-card-head h2{margin:0;font-size:14px}.usage-card-head p{margin:4px 0 0;color:#8a92a2;font-size:10px}.usage-legend{display:flex;gap:12px;color:#70798a;font-size:9px}.usage-legend span{display:flex;align-items:center;gap:5px}.usage-legend i{width:8px;height:8px;border-radius:3px;background:#e5221a}.usage-legend span:last-child i{background:#25272c}.usage-chart-scroll{overflow:auto;padding:22px 18px 12px}.usage-chart{display:grid;align-items:end;gap:7px;height:270px;min-width:720px;border-bottom:1px solid #e7e9ed;background:repeating-linear-gradient(to top,#f1f3f6 0,#f1f3f6 1px,transparent 1px,transparent 54px)}.usage-bar{display:grid;grid-template-rows:1fr auto;align-items:end;height:100%;min-width:20px}.usage-bar-track{display:flex;align-items:flex-end;justify-content:center;height:230px}.usage-bar-fill{display:flex;flex-direction:column;justify-content:flex-end;width:min(28px,72%);min-height:2px;border-radius:7px 7px 2px 2px;overflow:hidden;background:#eceef2;transition:.2s}.usage-bar:hover .usage-bar-fill{filter:brightness(.94);transform:translateY(-2px)}.usage-bar-download{display:block;background:linear-gradient(180deg,#ef4139,#e5221a)}.usage-bar-upload{display:block;background:#25272c}.usage-bar label{padding-top:7px;color:#8a92a1;font-size:8px;text-align:center;white-space:nowrap}.usage-quota{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:18px;padding:17px 19px}.usage-quota-copy{display:grid;gap:9px}.usage-quota-copy div{display:flex;justify-content:space-between;gap:12px;font-size:10px}.usage-quota-copy span{color:#7f8797}.usage-quota-track{height:8px;border-radius:10px;background:#eceef2;overflow:hidden}.usage-quota-track i{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#25272c,#e5221a)}.usage-quota-number{text-align:center}.usage-quota-number strong{display:block;font-size:24px}.usage-quota-number small{color:#8991a0;font-size:9px}.usage-table-wrap{max-height:480px;overflow:auto}.usage-table{width:100%;border-collapse:collapse}.usage-table th,.usage-table td{padding:12px 15px;border-bottom:1px solid #eef0f3;text-align:right;font-size:10px;white-space:nowrap}.usage-table th{position:sticky;top:0;background:#fafbfc;color:#858d9d;font-size:9px;z-index:1}.usage-table .total{color:#d8231b;font-weight:900}.usage-zero{color:#a2a8b3}.usage-note{display:flex;align-items:flex-start;gap:9px;padding:12px 14px;border:1px solid #f0dfc5;border-radius:12px;background:#fff9ef;color:#86611e;font-size:9px;line-height:1.7}.usage-note i{font-size:15px}
+@media(max-width:950px){.usage-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.usage-period{align-items:stretch;flex-wrap:wrap}}@media(max-width:620px){.usage-summary{grid-template-columns:1fr}.usage-period{display:grid}.usage-presets{overflow:auto}.usage-quota{grid-template-columns:1fr}.usage-quota-number{text-align:right}.usage-card-head{align-items:flex-start;flex-direction:column}}
+.usage-day-link{display:inline-flex;align-items:center;gap:9px;color:#c5231c;font-weight:800;text-decoration:none}.usage-day-link:hover{text-decoration:underline}.usage-day-link:focus-visible,.usage-bar:focus-visible{outline:2px solid #e5221a;outline-offset:-2px}.usage-bar{text-decoration:none;cursor:pointer}.usage-bar label{cursor:pointer}.usage-chart-scroll{padding:24px 20px 14px;background:linear-gradient(180deg,#fafbfc 0%,#fff 100%)}.usage-chart{position:relative;height:300px;gap:10px;min-width:760px;border:1px solid #edf0f3;border-radius:14px;background:repeating-linear-gradient(to top,transparent 0,transparent 59px,#e7ebf0 60px),linear-gradient(180deg,#fff 0%,#fbfcfd 100%);box-shadow:inset 0 1px 0 #fff}.usage-bar{position:relative;min-width:24px;padding:0 2px}.usage-bar-track{height:250px}.usage-bar-fill{width:min(34px,78%);min-height:3px;border-radius:9px 9px 3px 3px;box-shadow:0 5px 12px rgba(37,39,44,.12);transition:height .25s ease,transform .2s ease,filter .2s ease}.usage-bar-download{background:linear-gradient(180deg,#ff5a52 0%,#e5221a 100%)}.usage-bar-upload{background:linear-gradient(180deg,#566171 0%,#25272c 100%)}.usage-bar:hover .usage-bar-fill{filter:brightness(1.04);transform:translateY(-4px);box-shadow:0 9px 18px rgba(37,39,44,.2)}.usage-bar label{padding-top:10px;color:#667184;font-size:9px;font-weight:700}.usage-legend{gap:16px}.usage-legend i{width:10px;height:10px;border-radius:3px;box-shadow:0 1px 3px rgba(25,26,29,.16)}.usage-day-link small{color:#7c8492;font-weight:400}.usage-session-status{display:inline-block;padding:4px 8px;border-radius:6px;background:#f1f3f6;color:#647084}.usage-session-status.open{background:#e9f8ef;color:#19764a}.usage-session-time{display:block;direction:ltr;text-align:right;font-variant-numeric:tabular-nums}.usage-session-sub{display:block;margin-top:5px;font-size:9px;color:#828b99}.usage-session-pager{display:flex;align-items:center;justify-content:center;gap:14px;padding:16px}.usage-session-empty{text-align:center!important;padding:30px!important;color:#7f8797}.usage-session-summary{grid-template-columns:repeat(4,minmax(0,1fr))}
+
+/* Usage report: calm blue / teal palette */
+.usage-page{color:#23344d;gap:20px;background:#f3f6fb;padding:18px;border-radius:20px}
+.usage-page .usage-card,.usage-page .usage-metric,.usage-page .usage-period{border-color:#dfe7f1;box-shadow:0 4px 18px rgba(35,52,77,.035);border-radius:16px;background:#fff}
+.usage-page .usage-avatar,.usage-page .usage-metric i{background:#eaf1ff;color:#3569d4}
+.usage-page .usage-metric:nth-child(3) i{background:#e5f6f2;color:#168b7a}
+.usage-page .usage-metric{padding:20px}
+.usage-page .usage-metric strong{font-size:24px;color:#23344d;font-variant-numeric:tabular-nums}
+.usage-page .usage-metric span,.usage-page .usage-identity small,.usage-page .usage-card-head p,.usage-page .usage-metric small{color:#64748b}
+.usage-page .usage-card-head{padding:20px 22px;border-color:#e9eef5}
+.usage-page .usage-card-head h2{color:#23344d;font-size:15px}
+.usage-page .nawa-button.primary{background:#3569d4;border-color:#3569d4;color:#fff;box-shadow:none}
+.usage-page .nawa-button.primary:hover{background:#2857b7}
+.usage-page .usage-presets button:hover{background:#edf3ff;border-color:#9ab6ef;color:#2857b7}
+.usage-page input:focus-visible,.usage-page button:focus-visible,.usage-page a:focus-visible{outline:3px solid #92b7ff;outline-offset:3px}
+.usage-page .usage-legend{font-size:11px;color:#52647c;gap:18px}
+.usage-page .usage-legend i{background:#527fe0;border-radius:50%;box-shadow:none}
+.usage-page .usage-legend span:last-child i{background:#28a994}
+.usage-page .usage-chart-scroll{padding:22px 24px 18px;background:#fff}
+.usage-page .usage-chart{height:260px;gap:12px;border:0;border-radius:0;box-shadow:none;background:repeating-linear-gradient(to top,transparent 0,transparent 51px,#eaf0f7 51px,#eaf0f7 52px);padding:0 8px}
+.usage-page .usage-bar{padding:0 4px;grid-template-rows:1fr 42px}
+.usage-page .usage-bar-track{height:210px;position:relative;padding-top:26px;box-sizing:border-box}
+.usage-page .usage-bar-fill{position:relative;width:min(48px,70%);border-radius:8px 8px 0 0;overflow:visible;min-height:0;background:none;box-shadow:none;transition:filter .18s}
+.usage-page .usage-bar-download{background:#527fe0;border-radius:8px 8px 0 0}
+.usage-page .usage-bar-upload{background:#28a994}
+.usage-page .usage-bar:hover .usage-bar-fill,.usage-page .usage-bar:focus-visible .usage-bar-fill{transform:none;filter:brightness(.94);box-shadow:none}
+.usage-page .usage-bar:hover{background:#f4f7fd;border-radius:10px}
+.usage-page .usage-bar-value{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);padding-bottom:9px;white-space:nowrap;font-size:10px;font-weight:700;line-height:16px;color:#425773;direction:ltr;font-variant-numeric:tabular-nums}
+.usage-page .usage-bar label{font-size:10px;color:#64748b;padding-top:10px;font-weight:500;line-height:16px}
+.usage-page .usage-quota-track{background:#e9eff8;height:9px}
+.usage-page .usage-quota-track i{background:#527fe0}
+.usage-page .usage-quota-number strong{color:#3569d4}
+.usage-page .usage-table th{background:#f4f7fc;color:#52647c;font-size:10px}
+.usage-page .usage-table td{font-size:11px;padding:15px;border-color:#edf1f6;color:#425773}
+.usage-page .usage-table tbody tr:hover{background:#f6f9ff}
+.usage-page .usage-table .total,.usage-page .usage-day-link{color:#3569d4}
+.usage-page .usage-zero{color:#7b899c}
+.usage-page .usage-note{background:#eef4fc;border-color:#dce7f7;color:#526780;font-size:10px}
+@media(max-width:620px){.usage-page{padding:10px;gap:12px}.usage-page .usage-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.usage-page .usage-metric{padding:13px}.usage-page .usage-metric strong{font-size:19px}.usage-page .usage-chart-scroll{padding:16px 10px}.usage-page .usage-day-link{flex-wrap:wrap}.usage-page .usage-card-head{padding:16px}}
+@media(prefers-reduced-motion:reduce){.usage-page .usage-bar-fill{transition:none}}
+
+
+/* Trading-style usage chart */
+.usage-page .usage-trading-scroll{overflow-x:auto;padding:20px 22px 10px;background:linear-gradient(180deg,#fbfdff,#fff)}
+.usage-page .usage-trading-chart{display:block;width:100%;min-width:720px;height:290px;font-family:inherit}
+.usage-page .trading-grid line{stroke:#e6edf6;stroke-width:1}
+.usage-page .trading-area{fill:url(#usageDownloadArea)}
+.usage-page .trading-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-width:3}
+.usage-page .download-line{stroke:#527fe0}.usage-page .upload-line{stroke:#28a994;stroke-width:2.5}
+.usage-page .trading-dot{stroke:#fff;stroke-width:2}.usage-page .download-dot{fill:#527fe0}.usage-page .upload-dot{fill:#28a994}
+.usage-page .trading-hit{fill:transparent;cursor:pointer}.usage-page .trading-point:hover .download-dot,.usage-page .trading-point:focus .download-dot{r:6}.usage-page .trading-point:hover .upload-dot,.usage-page .trading-point:focus .upload-dot{r:5.5}
+.usage-page .trading-date{fill:#718096;font-size:10px;text-anchor:middle;font-weight:600}
+.usage-page .trading-legend span:first-child i{background:#527fe0}.usage-page .trading-legend span:last-child i{background:#28a994}
+@media(max-width:620px){.usage-page .usage-trading-scroll{padding:16px 8px 8px}.usage-page .usage-trading-chart{height:250px}}
+
+/* Usage dashboard finishing layer */
+.usage-page>.nawa-page-header.usage-hero{position:relative;overflow:hidden;align-items:center;min-height:96px;padding:20px 24px;border:1px solid #dbe8f8;border-radius:17px;background:radial-gradient(circle at 42% 50%,#d8ecff 0,transparent 28%),linear-gradient(120deg,#f8fcff,#eaf4ff 58%,#f9fcff)}.usage-page>.nawa-page-header.usage-hero:before{content:"";position:absolute;inset:-40% auto auto 35%;width:340px;height:180px;border-radius:50%;border:1px solid #bddcff;transform:rotate(-12deg)}.usage-page>.nawa-page-header.usage-hero>*{position:relative}.usage-page>.nawa-page-header.usage-hero .usage-avatar{width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#63a7ff,#1263df);color:#fff;box-shadow:0 7px 16px #2072d536}.usage-page>.nawa-page-header.usage-hero .usage-identity b{font-size:18px;color:#102e64}.usage-page>.nawa-page-header.usage-hero .usage-identity small{font-size:11px;color:#466899}.usage-page>.nawa-page-header.usage-hero .nawa-page-actions{display:flex;gap:8px;flex-wrap:wrap}.usage-page>.usage-period{justify-content:flex-start;padding:12px 17px;background:linear-gradient(90deg,#fff,#f9fcff)}.usage-page>.usage-period label:first-of-type{margin-inline-start:auto}.usage-page .usage-metric{min-height:100px;padding:18px 20px}.usage-page .usage-metric:nth-child(1) i{background:#e8f2ff;color:#1175ee}.usage-page .usage-metric:nth-child(2) i{background:#eee6ff;color:#7747dd}.usage-page .usage-metric:nth-child(3) i{background:#e0faef;color:#08ae70}.usage-page .usage-metric:nth-child(4) i{background:#e8f2ff;color:#1175ee}.usage-page .usage-card{border-radius:17px}.usage-page .usage-quota{min-height:130px}.usage-page .usage-table-wrap{max-height:none}.usage-page .usage-period input{min-width:132px}html[data-theme="dark"] .usage-page,body.dark .usage-page{background:#071828;color:#e7f1ff}html[data-theme="dark"] .usage-page .usage-card,html[data-theme="dark"] .usage-page .usage-metric,html[data-theme="dark"] .usage-page .usage-period,body.dark .usage-page .usage-card,body.dark .usage-page .usage-metric,body.dark .usage-page .usage-period{border-color:#1d4264;background:#0b2137;color:#e7f1ff;box-shadow:0 7px 22px #0003}html[data-theme="dark"] .usage-page>.nawa-page-header.usage-hero,body.dark .usage-page>.nawa-page-header.usage-hero{border-color:#1c507f;background:radial-gradient(circle at 42% 50%,#105598 0,transparent 28%),linear-gradient(120deg,#082544,#06162b 58%,#0a284a)}html[data-theme="dark"] .usage-page>.nawa-page-header.usage-hero .usage-identity b,body.dark .usage-page>.nawa-page-header.usage-hero .usage-identity b{color:#eef6ff}html[data-theme="dark"] .usage-page>.nawa-page-header.usage-hero .usage-identity small,body.dark .usage-page>.nawa-page-header.usage-hero .usage-identity small{color:#a9c9ee}html[data-theme="dark"] .usage-page .usage-metric strong,html[data-theme="dark"] .usage-page .usage-card-head h2,body.dark .usage-page .usage-metric strong,body.dark .usage-page .usage-card-head h2{color:#edf6ff}html[data-theme="dark"] .usage-page .usage-card-head,body.dark .usage-page .usage-card-head{border-color:#1d4264;background:#0d2945}html[data-theme="dark"] .usage-page .usage-trading-scroll,body.dark .usage-page .usage-trading-scroll{background:#0b2137}html[data-theme="dark"] .usage-page .trading-grid line,body.dark .usage-page .trading-grid line{stroke:#21435f}html[data-theme="dark"] .usage-page .trading-date,body.dark .usage-page .trading-date{fill:#a8c3df}html[data-theme="dark"] .usage-page .usage-table th,body.dark .usage-page .usage-table th{background:#102d4b;color:#afc8e5}html[data-theme="dark"] .usage-page .usage-table td,body.dark .usage-page .usage-table td{border-color:#1b3d5c;color:#d5e5f6}@media(max-width:760px){.usage-page>.nawa-page-header.usage-hero{align-items:flex-start;padding:17px;gap:15px}.usage-page>.usage-period label:first-of-type{margin-inline-start:0}.usage-page>.usage-period{display:grid;grid-template-columns:1fr 1fr}.usage-page>.usage-period .nawa-button{width:100%}.usage-page>.usage-period .usage-presets{grid-column:1/-1}.usage-page .usage-period input{min-width:0;width:100%;box-sizing:border-box}}@media(max-width:430px){.usage-page>.usage-period{grid-template-columns:1fr}.usage-page>.usage-period .usage-presets{grid-column:auto}.usage-page>.nawa-page-header.usage-hero .nawa-page-actions{width:100%}.usage-page>.nawa-page-header.usage-hero .nawa-page-actions>*{flex:1;text-align:center}.usage-page .usage-summary{grid-template-columns:1fr}}
+ .usage-page>.nawa-page-header{position:relative;overflow:hidden;align-items:center;min-height:96px;padding:20px 24px;border:1px solid #dbe8f8;border-radius:17px;background:radial-gradient(circle at 42% 50%,#d8ecff 0,transparent 28%),linear-gradient(120deg,#f8fcff,#eaf4ff 58%,#f9fcff)}.usage-page>.nawa-page-header:before{content:"";position:absolute;inset:-40% auto auto 35%;width:340px;height:180px;border-radius:50%;border:1px solid #bddcff;transform:rotate(-12deg)}.usage-page>.nawa-page-header>*{position:relative}.usage-page>.nawa-page-header .usage-avatar{width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#63a7ff,#1263df);color:#fff;box-shadow:0 7px 16px #2072d536}.usage-page>.nawa-page-header .usage-identity b{font-size:18px;color:#102e64}.usage-page>.nawa-page-header .usage-identity small{font-size:11px;color:#466899}.usage-page>.nawa-page-header .nawa-page-actions{display:flex;gap:8px;flex-wrap:wrap}html[data-theme="dark"] .usage-page>.nawa-page-header,body.dark .usage-page>.nawa-page-header{border-color:#1c507f;background:radial-gradient(circle at 42% 50%,#105598 0,transparent 28%),linear-gradient(120deg,#082544,#06162b 58%,#0a284a)}html[data-theme="dark"] .usage-page>.nawa-page-header .usage-identity b,body.dark .usage-page>.nawa-page-header .usage-identity b{color:#eef6ff}html[data-theme="dark"] .usage-page>.nawa-page-header .usage-identity small,body.dark .usage-page>.nawa-page-header .usage-identity small{color:#a9c9ee}
+</style>
+<div class="nawa-page usage-page">
+  <section class="nawa-page-header"><div class="usage-identity"><span class="usage-avatar"><?= nawa_usage_e(mb_substr($isCard ? $username : ($fullname !== 'بدون اسم مسجل' ? $fullname : $username), 0, 1)) ?></span><span><b>تفاصيل استخدام <?= $isCard ? 'الكرت ' : '' ?><?= nawa_usage_e($username) ?></b><small><?= nawa_usage_e($fullname) ?> · <?= nawa_usage_e($subscriber['package_name'] ?? 'بدون باقة') ?><?= !empty($subscriber['mobilephone']) ? ' · ' . nawa_usage_e($subscriber['mobilephone']) : '' ?></small></span></div><div class="nawa-page-actions"><button class="nawa-button" type="button" onclick="loadSection('<?= nawa_usage_e($returnUrl) ?>')"><i class="bi bi-arrow-right"></i> رجوع</button><a class="nawa-button primary" href="<?= nawa_usage_e($pdfUrl) ?>" target="_blank" rel="noopener"><i class="bi bi-file-earmark-pdf"></i> تحميل تقرير PDF</a></div></section>
+
+  <form class="usage-period" id="usage-period-form"><input type="hidden" name="username" value="<?= nawa_usage_e($username) ?>"><label><span>من تاريخ</span><input type="date" name="from" value="<?= nawa_usage_e($report['from']) ?>" max="<?= date('Y-m-d') ?>"></label><label><span>إلى تاريخ</span><input type="date" name="to" value="<?= nawa_usage_e($report['to']) ?>" max="<?= date('Y-m-d') ?>"></label><button class="nawa-button primary" type="submit"><i class="bi bi-funnel"></i> عرض الفترة</button><div class="usage-presets"><button type="button" data-usage-days="7">7 أيام</button><button type="button" data-usage-days="30">30 يوم</button><button type="button" data-usage-days="90">90 يوم</button><?php if ($report['cycle']): ?><button type="button" data-usage-cycle="<?= nawa_usage_e($report['cycle']) ?>">الدورة الحالية</button><?php endif; ?></div></form>
+
+  <?php if ($selectedDay !== null): ?>
+  <section class="usage-card"><header class="usage-card-head"><div><h2>تفاصيل يوم <?= nawa_usage_e(nawa_usage_weekday($selectedDay)) ?> · <bdi><?= nawa_usage_e($selectedDay) ?></bdi></h2><p>الجلسات المسجلة خلال هذا اليوم · جميع الأوقات بتوقيت اليمن</p></div><a class="nawa-button" data-usage-link href="<?= nawa_usage_e($usageBaseUrl) ?>"><i class="bi bi-arrow-right"></i> رجوع لتفاصيل الأيام</a></header></section>
+  <section class="usage-summary">
+    <article class="usage-metric"><span>عدد جلسات اليوم <i class="bi bi-clock-history"></i></span><strong><?= $sessionDetails !== null ? number_format($sessionDetails['count']) : '—' ?></strong><small>يشمل الجلسات الممتدة من اليوم السابق</small></article>
+    <article class="usage-metric"><span>تنزيل اليوم <i class="bi bi-arrow-down"></i></span><strong><?= nawa_usage_e(nawa_usage_human($selectedSummary['download_bytes'])) ?></strong><small>حسب تقرير الاستخدام اليومي</small></article>
+    <article class="usage-metric"><span>رفع اليوم <i class="bi bi-arrow-up"></i></span><strong><?= nawa_usage_e(nawa_usage_human($selectedSummary['upload_bytes'])) ?></strong><small>حسب تقرير الاستخدام اليومي</small></article>
+    <article class="usage-metric"><span>إجمالي استهلاك اليوم <i class="bi bi-bar-chart-line"></i></span><strong><?= nawa_usage_e(nawa_usage_human($selectedSummary['total_bytes'])) ?></strong><small>التنزيل + الرفع</small></article>
+  </section>
+  <div class="usage-note"><i class="bi bi-info-circle"></i><span>القيم أدناه هي استهلاك كل جلسة كاملة حتى آخر تحديث. الجلسة الممتدة لأكثر من يوم تظهر في كل يوم كانت فيه مسجلة؛ لذلك قد يختلف مجموع استهلاك الجلسات عن إجمالي اليوم، خصوصًا عند تجديد الباقة. السجلات الحالية لا تفصل استهلاك الجلسة الواحدة عند منتصف الليل.</span></div>
+  <section class="usage-card"><header class="usage-card-head"><div><h2>جلسات اليوم</h2><p>من الأحدث إلى الأقدم · التنزيل والرفع وإجمالي الاستهلاك لكل جلسة</p></div></header><div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>الجلسة</th><th>من الساعة</th><th>إلى الساعة</th><th>الحالة</th><th>التنزيل</th><th>الرفع</th><th>إجمالي استهلاك الجلسة</th></tr></thead><tbody>
+  <?php if ($sessionError): ?><tr><td colspan="7" class="usage-session-empty">تعذر تحميل الجلسات الآن. أعد فتح اليوم للمحاولة مجددًا.</td></tr>
+  <?php elseif (empty($sessionDetails['rows'])): ?><tr><td colspan="7" class="usage-session-empty">لا توجد جلسات مسجلة لهذا اليوم.</td></tr>
+  <?php else: foreach ($sessionDetails['rows'] as $index => $session): $isOpen = empty($session['acctstoptime']); ?>
+    <tr><td><?= number_format($sessionDetails['offset'] + $index + 1) ?></td><td><span class="usage-session-time"><?= nawa_usage_e(nawa_usage_session_time($session['acctstarttime'])) ?></span></td><td><?php if ($isOpen): ?><span>لم تُسجل نهاية</span><small class="usage-session-sub">آخر تحديث: <bdi><?= nawa_usage_e(nawa_usage_session_time($session['acctupdatetime'])) ?></bdi></small><?php else: ?><span class="usage-session-time"><?= nawa_usage_e(nawa_usage_session_time($session['acctstoptime'])) ?></span><?php endif; ?></td><td><span class="usage-session-status <?= $isOpen ? 'open' : '' ?>"><?= $isOpen ? 'مفتوحة' : 'منتهية' ?></span></td><td><bdi><?= nawa_usage_e(nawa_usage_human($session['download_bytes'])) ?></bdi></td><td><bdi><?= nawa_usage_e(nawa_usage_human($session['upload_bytes'])) ?></bdi></td><td class="total"><bdi><?= nawa_usage_e(nawa_usage_human(max(0, (int) $session['download_bytes']) + max(0, (int) $session['upload_bytes']))) ?></bdi></td></tr>
+  <?php endforeach; endif; ?>
+  </tbody></table></div>
+  <?php if ($sessionDetails !== null && $sessionDetails['pages'] > 1): ?><nav class="usage-session-pager" aria-label="صفحات الجلسات"><?php if ($sessionDetails['page'] > 1): ?><a class="nawa-button" data-usage-link href="<?= nawa_usage_e($usageBaseUrl . '&day=' . $selectedDay . '&session_page=' . ($sessionDetails['page'] - 1)) ?>">السابق</a><?php endif; ?><span><?= $sessionDetails['page'] ?> / <?= $sessionDetails['pages'] ?></span><?php if ($sessionDetails['page'] < $sessionDetails['pages']): ?><a class="nawa-button" data-usage-link href="<?= nawa_usage_e($usageBaseUrl . '&day=' . $selectedDay . '&session_page=' . ($sessionDetails['page'] + 1)) ?>">التالي</a><?php endif; ?></nav><?php endif; ?>
+  </section>
+  <?php else: ?>
+  <section class="usage-summary">
+    <article class="usage-metric"><span>إجمالي الفترة <i class="bi bi-bar-chart-line"></i></span><strong><?= nawa_usage_e(nawa_usage_human($report['total'])) ?></strong><small><?= number_format(count($report['days'])) ?> يوم في التقرير</small></article>
+    <article class="usage-metric"><span>التنزيل <i class="bi bi-arrow-down"></i></span><strong><?= nawa_usage_e(nawa_usage_human($report['total_download'])) ?></strong><small><?= $report['total'] > 0 ? number_format(($report['total_download'] / $report['total']) * 100, 1) : '0.0' ?>% من الاستخدام</small></article>
+    <article class="usage-metric"><span>الرفع <i class="bi bi-arrow-up"></i></span><strong><?= nawa_usage_e(nawa_usage_human($report['total_upload'])) ?></strong><small><?= $report['total'] > 0 ? number_format(($report['total_upload'] / $report['total']) * 100, 1) : '0.0' ?>% من الاستخدام</small></article>
+    <article class="usage-metric"><span>أعلى يوم <i class="bi bi-graph-up-arrow"></i></span><strong><?= nawa_usage_e(nawa_usage_human($report['peak']['total_bytes'] ?? 0)) ?></strong><small><?= !empty($report['peak']['date']) ? nawa_usage_e($report['peak']['date']) : 'لا يوجد استهلاك' ?></small></article>
+  </section>
+
+  <?php if ($quota > 0): $usedPercent = min(100, max(0, ($used / $quota) * 100)); ?>
+  <section class="usage-card"><header class="usage-card-head"><div><h2>ملخص الباقة الحالية</h2><p>الرصيد الفعلي المسجل على حساب المشترك الآن</p></div></header><div class="usage-quota"><div class="usage-quota-copy"><div><span>حجم الباقة</span><b><?= nawa_usage_e(nawa_usage_human($quota)) ?></b></div><div><span>المستهلك الفعلي</span><b><?= nawa_usage_e(nawa_usage_human($used)) ?></b></div><div class="usage-quota-track"><i style="width:<?= number_format($usedPercent, 2, '.', '') ?>%"></i></div><div><span>المتبقي</span><b><?= nawa_usage_e(nawa_usage_human($remaining)) ?></b></div></div><div class="usage-quota-number"><strong><?= number_format($usedPercent, 1) ?>%</strong><small>من الباقة مستخدم</small></div></div></section>
+  <?php endif; ?>
+
+  <section class="usage-card usage-trading-card"><header class="usage-card-head"><div><h2>حركة الاستخدام اليومية</h2><p>مخطط تفاعلي يوضح حركة التنزيل والرفع خلال الفترة</p></div><div class="usage-legend trading-legend"><span><i></i> تنزيل</span><span><i></i> رفع</span></div></header><div class="usage-trading-scroll"><svg class="usage-trading-chart" viewBox="0 0 <?= $chartWidth ?> <?= $chartHeight ?>" role="img" aria-label="مخطط حركة الاستخدام اليومي" preserveAspectRatio="none"><defs><linearGradient id="usageDownloadArea" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#527fe0" stop-opacity=".28"/><stop offset="100%" stop-color="#527fe0" stop-opacity=".015"/></linearGradient></defs><g class="trading-grid"><?php for ($gridIndex = 0; $gridIndex < 5; $gridIndex++): $gridY = $chartPaddingTop + (($chartPlotHeight / 4) * $gridIndex); ?><line x1="<?= $chartPaddingX ?>" x2="<?= $chartWidth - $chartPaddingX ?>" y1="<?= number_format($gridY, 2, '.', '') ?>" y2="<?= number_format($gridY, 2, '.', '') ?>"/><?php endfor; ?></g><polygon class="trading-area" points="<?= nawa_usage_e($downloadAreaPoints) ?>"/><polyline class="trading-line download-line" points="<?= implode(' ', $downloadPoints) ?>"/><polyline class="trading-line upload-line" points="<?= implode(' ', $uploadPoints) ?>"/><?php foreach ($chartDots as $dot): $chartDay = $dot['day']; ?><a class="trading-point" data-usage-link href="<?= nawa_usage_e($usageBaseUrl . '&day=' . $chartDay['date']) ?>" aria-label="<?= nawa_usage_e('عرض جلسات ' . nawa_usage_weekday($chartDay['date']) . ' ' . $chartDay['date']) ?>"><title><?= nawa_usage_e($chartDay['date'] . ' — تنزيل ' . nawa_usage_human($chartDay['download_bytes']) . '، رفع ' . nawa_usage_human($chartDay['upload_bytes'])) ?></title><circle class="trading-hit" cx="<?= number_format($dot['x'], 2, '.', '') ?>" cy="<?= number_format(($dot['download_y'] + $dot['upload_y']) / 2, 2, '.', '') ?>" r="22"/><circle class="trading-dot download-dot" cx="<?= number_format($dot['x'], 2, '.', '') ?>" cy="<?= number_format($dot['download_y'], 2, '.', '') ?>" r="4"/><circle class="trading-dot upload-dot" cx="<?= number_format($dot['x'], 2, '.', '') ?>" cy="<?= number_format($dot['upload_y'], 2, '.', '') ?>" r="3.5"/><text class="trading-date" x="<?= number_format($dot['x'], 2, '.', '') ?>" y="<?= $chartHeight - 13 ?>"><?= nawa_usage_e($chartDay['label']) ?></text></a><?php endforeach; ?></svg></div></section>
+
+  <section class="usage-card"><header class="usage-card-head"><div><h2>تفاصيل الأيام</h2><p><?= number_format($report['active_days']) ?> أيام فيها استخدام · <?= number_format($report['sessions']) ?> جلسة</p></div></header><div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>اليوم والتاريخ</th><th>التنزيل</th><th>الرفع</th><th>إجمالي اليوم</th><th>الجلسات</th></tr></thead><tbody><?php foreach ($daysReversed as $day): ?><tr><td><a class="usage-day-link" data-usage-link href="<?= nawa_usage_e($usageBaseUrl . '&day=' . $day['date']) ?>"><span><?= nawa_usage_e(nawa_usage_weekday($day['date'])) ?></span><bdi><?= nawa_usage_e($day['date']) ?></bdi><small>عرض الجلسات <i class="bi bi-chevron-left"></i></small></a></td><td><?= nawa_usage_e(nawa_usage_human($day['download_bytes'])) ?></td><td><?= nawa_usage_e(nawa_usage_human($day['upload_bytes'])) ?></td><td class="<?= $day['total_bytes'] > 0 ? 'total' : 'usage-zero' ?>"><?= nawa_usage_e(nawa_usage_human($day['total_bytes'])) ?></td><td><?= number_format($day['session_count']) ?></td></tr><?php endforeach; ?></tbody></table></div></section>
+  <?php endif; ?>
+  <div class="usage-note"><i class="bi bi-info-circle"></i><span>يُحسب الاستهلاك من سجلات المحاسبة الفعلية RADIUS. التقرير يوضح حركة البيانات المسجلة لكل يوم، بينما ملخص الباقة يعرض الرصيد الحالي الفعلي للحساب.</span></div>
+</div>
+<script>
+(function(){var form=document.getElementById('usage-period-form');if(!form)return;form.closest('.usage-page').querySelectorAll('[data-usage-link]').forEach(function(link){link.addEventListener('click',function(event){if(event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;event.preventDefault();loadSection(link.getAttribute('href'));});});var username=form.querySelector('[name="username"]').value;var usageContext=<?= json_encode($usageContext, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;function ymd(date){return date.getFullYear()+'-'+String(date.getMonth()+1).padStart(2,'0')+'-'+String(date.getDate()).padStart(2,'0');}function openRange(from,to){loadSection('nawa-user-usage.php?fragment=1&username='+encodeURIComponent(username)+'&from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)+usageContext);}form.addEventListener('submit',function(event){event.preventDefault();openRange(form.querySelector('[name="from"]').value,form.querySelector('[name="to"]').value);});form.querySelectorAll('[data-usage-days]').forEach(function(button){button.addEventListener('click',function(){var days=Number(button.dataset.usageDays)||30;var to=new Date();var from=new Date(to);from.setDate(from.getDate()-(days-1));openRange(ymd(from),ymd(to));});});form.querySelectorAll('[data-usage-cycle]').forEach(function(button){button.addEventListener('click',function(){openRange(button.dataset.usageCycle,ymd(new Date()));});});})();
+</script>

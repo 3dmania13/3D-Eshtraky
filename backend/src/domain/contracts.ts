@@ -41,6 +41,12 @@ export interface SubscriberRepository {
     deviceId: string;
     friendlyName: string;
   }): Promise<DeviceRecord | null>;
+  setDeviceSpeed(input: {
+    subscriber: SubscriberPrincipal;
+    deviceId: string;
+    selection: string | null;
+  }): Promise<DeviceRecord | null>;
+  invalidateDeviceSpeedApplications(username: string): Promise<void>;
   getRecharges(username: string, limit: number): Promise<RechargeRecord[]>;
   upsertDerivedNotifications(input: {
     username: string;
@@ -48,6 +54,12 @@ export interface SubscriberRepository {
   }): Promise<void>;
   getNotifications(username: string, limit: number): Promise<NotificationRecord[]>;
   markNotificationRead(username: string, notificationId: string): Promise<boolean>;
+  markAllNotificationsRead(username: string): Promise<number>;
+  registerPushToken(input: { username: string; token: string; platform: 'android' }): Promise<void>;
+  getSpeedSelection(username: string): Promise<string>;
+  setSpeedSelection(input: { username: string; selection: string }): Promise<void>;
+  getConnectionLimit(username: string): Promise<number | null>;
+  setConnectionLimit(input: { username: string; limit: number }): Promise<void>;
 }
 
 export interface UsageDateRanges {

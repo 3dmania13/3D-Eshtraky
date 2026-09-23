@@ -1,0 +1,202 @@
+<?php
+declare(strict_types=1);
+
+date_default_timezone_set('Asia/Aden');
+include 'library/checklogin.php';
+$operator = (string) $_SESSION['operator_user'];
+include_once '../common/includes/config_read.php';
+$operator_perm_file = 'mng_list_all';
+include 'library/check_operator_perm.php';
+include_once 'lang/main.php';
+include_once '../common/includes/validation.php';
+include '../common/includes/layout.php';
+include_once 'include/nawa/functions.php';
+include '../common/includes/db_open.php';
+
+$fragmentMode = isset($_GET['fragment']) && $_GET['fragment'] === '1';
+$successMsg = '';
+$failureMsg = '';
+$audience = (string) ($_POST['audience'] ?? 'all');
+$prefix = trim((string) ($_POST['ip_prefix'] ?? '22.'));
+$title = trim((string) ($_POST['title'] ?? ''));
+$message = trim((string) ($_POST['message'] ?? ''));
+$includeLink = (string) ($_POST['include_link'] ?? '') === '1';
+$linkTitle = trim((string) ($_POST['link_title'] ?? ''));
+$linkUrl = trim((string) ($_POST['link_url'] ?? ''));
+
+function broadcastSubscribersSql(string $audience, string $prefix, $db): string {
+    // Broadcasts are for accounts that have actually signed into the app.
+    // This deliberately does not enumerate the full RADIUS subscriber table.
+    $base = " FROM (SELECT DISTINCT username FROM subscriber_push_known_devices) app_user WHERE 1=1";
+    if ($audience !== 'ip_prefix') return $base;
+    $safePrefix = $db->escapeSimple($prefix);
+    // Network targeting applies only after the app-user audience is selected.
+    return $base . " AND COALESCE((SELECT ra.framedipaddress FROM radacct ra USE INDEX (username)
+        WHERE ra.username=app_user.username ORDER BY ra.acctstarttime DESC,ra.radacctid DESC LIMIT 1),'') LIKE '" . $safePrefix . "%'";
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!isset($_POST['csrf_token']) || !dalo_check_csrf_token((string) $_POST['csrf_token'])) {
+        $failureMsg = 'انتهت صلاحية الجلسة. حدّث الصفحة ثم أعد المحاولة.';
+    } elseif (!in_array($audience, ['all', 'ip_prefix'], true)) {
+        $failureMsg = 'نوع المستلمين غير صحيح.';
+    } elseif ($audience === 'ip_prefix' && !preg_match('/^\d{1,3}(?:\.\d{0,3}){0,3}\.?$/', $prefix)) {
+        $failureMsg = 'اكتب بداية IP صحيحة، مثل 22. أو 192.168.22.';
+    } elseif ($title === '' || mb_strlen($title) > 180 || $message === '' || mb_strlen($message) > 8000) {
+        $failureMsg = 'العنوان مطلوب حتى 180 حرفًا، ونص الرسالة مطلوب حتى 8000 حرف.';
+    } elseif ($includeLink && ($linkTitle === '' || mb_strlen($linkTitle) > 180 || $linkUrl === '' || mb_strlen($linkUrl) > 2048 || !filter_var($linkUrl, FILTER_VALIDATE_URL) || !preg_match('~^https?://~i', $linkUrl))) {
+        $failureMsg = 'اكتب عنوان الرابط ورابطًا صحيحًا يبدأ بـ https:// أو http://.';
+    } else {
+        $sql = broadcastSubscribersSql($audience, $prefix, $dbSocket);
+        $dbSocket->query('START TRANSACTION');
+        $insert = $dbSocket->query(sprintf(
+            "INSERT INTO subscriber_broadcasts(audience,ip_prefix,title,message,link_title,link_url,created_by,status) VALUES (%s,%s,%s,%s,%s,%s,%s,'queued')",
+            $dbSocket->quoteSmart($audience),
+            $audience === 'ip_prefix' ? $dbSocket->quoteSmart($prefix) : 'NULL',
+            $dbSocket->quoteSmart($title), $dbSocket->quoteSmart($message),
+            $includeLink ? $dbSocket->quoteSmart($linkTitle) : 'NULL',
+            $includeLink ? $dbSocket->quoteSmart($linkUrl) : 'NULL',
+            $dbSocket->quoteSmart($operator)
+        ));
+        if (DB::isError($insert)) {
+            $dbSocket->query('ROLLBACK');
+            $failureMsg = 'تعذر إنشاء طلب الإرسال. تأكد من تطبيق تحديث الإشعارات.';
+        } else {
+            $broadcastId = (int) $dbSocket->getOne('SELECT LAST_INSERT_ID()');
+            $recipients = $dbSocket->query("INSERT IGNORE INTO subscriber_broadcast_recipients(broadcast_id,username)
+                SELECT {$broadcastId},app_user.username {$sql}");
+            if (DB::isError($recipients)) {
+                $dbSocket->query('ROLLBACK');
+                $failureMsg = 'تعذر تحديد المستلمين؛ لم يتم إرسال أي إشعار.';
+            } else {
+                $count = (int) $dbSocket->affectedRows();
+                $dbSocket->query('COMMIT');
+                $successMsg = "تمت جدولة الرسالة لـ " . number_format($count) . " مشترك. تصل كإشعار خارجي ثم تظهر كاملة عند الدخول للتطبيق.";
+                $title = $message = $linkTitle = $linkUrl = '';
+                $includeLink = false;
+            }
+        }
+    }
+}
+
+$allCount = (int) $dbSocket->getOne('SELECT COUNT(*)' . broadcastSubscribersSql('all', '', $dbSocket));
+$prefixCount = $audience === 'ip_prefix' && preg_match('/^\d{1,3}(?:\.\d{0,3}){0,3}\.?$/', $prefix)
+    ? (int) $dbSocket->getOne('SELECT COUNT(*)' . broadcastSubscribersSql('ip_prefix', $prefix, $dbSocket)) : 0;
+$history = $dbSocket->query("SELECT b.*,COUNT(r.username) AS recipients,
+    SUM(r.status='queued') AS queued FROM subscriber_broadcasts b
+    LEFT JOIN subscriber_broadcast_recipients r ON r.broadcast_id=b.id
+    GROUP BY b.id ORDER BY b.id DESC LIMIT 12");
+$rows = [];
+if (!DB::isError($history)) while ($row = $history->fetchRow(DB_FETCHMODE_ASSOC)) $rows[] = $row;
+$csrf = dalo_csrf_token();
+if (!$fragmentMode) print_html_prologue('رسائل التطبيق', $langCode, ['static/css/nawa-production.css']);
+?>
+<style>
+.broadcast-page{--ink:#102e5d;--muted:#7085a8;--line:#dce8f7;max-width:1360px;padding:28px;color:var(--ink);background:#f5f9ff}.broadcast-card{padding:22px;border:1px solid var(--line);border-radius:17px;background:#fff;box-shadow:0 6px 20px #1b4f8510}.broadcast-card h1{font-size:31px}.broadcast-card h1,.broadcast-card h2{color:#102e5d}.broadcast-card p{color:var(--muted)}.broadcast-field label{color:#355783}.broadcast-field input,.broadcast-field textarea,.broadcast-field select{border-color:#d6e4f5;background:#fff;color:#173867}.broadcast-preview{border:1px solid #d8e5f5;background:#f7fbff}.broadcast-preview span{color:#54719a}.broadcast-count{border:1px solid #ccebdc;background:#effbf5;color:#078654}.broadcast-warning{background:#fff8e8;color:#966300}.broadcast-history th{color:#56749f;background:#f6faff}.broadcast-history th,.broadcast-history td{border-bottom-color:#e6eef7}.broadcast-alert.ok{background:#e9f8f0;color:#078654}.broadcast-alert.error{background:#fff0f2;color:#c21d35}.nawa-button.primary{border-color:#e5233f!important;background:#e5233f!important}.broadcast-page>section:first-child{display:flex;align-items:center;min-height:122px;background:linear-gradient(110deg,#fff,#f1f7ff)}.broadcast-page>section:first-child h1:before{content:'✈';display:inline-grid;place-items:center;width:64px;height:64px;margin-left:17px;border-radius:16px;background:#e3f0ff;color:#1672dc;font-size:27px;vertical-align:middle}.broadcast-grid{gap:16px}@media(max-width:800px){.broadcast-page{padding:14px}.broadcast-grid{grid-template-columns:1fr}.broadcast-page>section:first-child{display:block}.broadcast-card h1{font-size:25px}}
+</style>
+<main class="message-studio">
+  <section class="studio-hero">
+    <div class="studio-title"><span class="studio-icon"><i class="bi bi-send-fill"></i></span><div><h1>رسائل التطبيق</h1><p>أرسل رسائل وإشعارات للمستخدمين داخل التطبيق بشكل فوري وآمن.</p></div></div>
+    <div class="hero-mini-phone"><div class="hero-notch"></div><div class="hero-push"><i class="bi bi-app-indicator"></i><b>3D Radius</b><span>رسالة جديدة الآن</span></div></div>
+    <div class="hero-stat"><span class="hero-stat-icon"><i class="bi bi-bar-chart-fill"></i></span><div><b>تواصل مباشر مع مستخدميك</b><small>أرسل إعلانات وتنبيهات وتحديثات مهمة</small></div></div>
+  </section>
+  <?php if ($successMsg): ?><div class="broadcast-alert ok"><?= nawa_e($successMsg) ?></div><?php endif; ?>
+  <?php if ($failureMsg): ?><div class="broadcast-alert error"><?= nawa_e($failureMsg) ?></div><?php endif; ?>
+  <div class="studio-workspace">
+    <aside class="phone-preview-panel"><header><h2>معاينة الرسالة <i class="bi bi-chat-square-text-fill"></i></h2><p>هكذا ستظهر الرسالة داخل تطبيق المستخدم</p></header><div class="phone-shell"><div class="phone-speaker"></div><div class="phone-clock">9:41</div><div class="phone-date">السبت، 22 سبتمبر</div><div class="phone-notification"><div class="notification-brand"><i class="bi bi-app-indicator"></i><b>3D Radius</b><small>الآن</small></div><strong data-preview-title><?= nawa_e($title ?: 'عنوان الرسالة يظهر هنا') ?></strong><span data-preview-body><?= nawa_e($message ?: 'هذا نص الرسالة سيظهر للمستخدم داخل التطبيق.') ?></span></div></div><p class="preview-note"><i class="bi bi-info-circle"></i> هذه مجرد معاينة تجريبية لشكل الرسالة</p></aside>
+    <section class="composer-card"><header class="composer-heading"><h2>إرسال رسالة جديدة <i class="bi bi-send-fill"></i></h2><p>اختر المستلمين واكتب محتوى الرسالة</p></header><form method="post" data-broadcast-form><input type="hidden" name="csrf_token" value="<?= nawa_e($csrf) ?>"><select class="audience-native" name="audience" data-audience><option value="all" <?= $audience === 'all' ? 'selected' : '' ?>>كل مستخدمي التطبيق</option><option value="ip_prefix" <?= $audience === 'ip_prefix' ? 'selected' : '' ?>>مستخدمون حسب الشبكة</option></select><section class="form-step"><div class="step-heading"><span>1</span><div><h3>المستلمون</h3><p>اختر من سيستلم الرسالة</p></div></div><div class="audience-cards"><button type="button" class="audience-card <?= $audience === 'all' ? 'selected' : '' ?>" data-audience-choice="all"><i class="bi bi-people-fill"></i><b>جميع المستخدمين</b><small>مستخدمو التطبيق (<?= number_format($allCount) ?>)</small></button><button type="button" class="audience-card <?= $audience === 'ip_prefix' ? 'selected' : '' ?>" data-audience-choice="ip_prefix"><i class="bi bi-filter-circle"></i><b>مستخدمون حسب الشبكة</b><small>مثال: بداية IP هي 22.</small></button><button type="button" class="audience-card disabled" disabled><i class="bi bi-person-check"></i><b>مستخدمون محددون</b><small>اختيار المستخدمين يدويًا قريبًا</small></button></div><div class="prefix-wrap" data-prefix-field <?= $audience === 'ip_prefix' ? '' : 'hidden' ?>><label>بداية IP للشبكة</label><input name="ip_prefix" value="<?= nawa_e($prefix) ?>" placeholder="22."></div><div class="recipient-count" data-count><?= $audience === 'ip_prefix' ? number_format($prefixCount) : number_format($allCount) ?> مستخدم من التطبيق سيتلقون الرسالة</div></section><section class="form-step message-step"><div class="step-heading"><span>2</span><div><h3>محتوى الرسالة</h3><p>اكتب العنوان والنص الذي سيظهر داخل التطبيق</p></div></div><div class="broadcast-field"><label>عنوان الرسالة</label><input name="title" maxlength="180" required value="<?= nawa_e($title) ?>" data-title placeholder="مثال: تحديث جديد متاح ✨"><small>حتى 180 حرفًا</small></div><div class="broadcast-field"><label>نص الرسالة</label><textarea name="message" maxlength="8000" required data-message placeholder="مثال: يمكنك الآن تجربة الإصدار الجديد من التطبيق... "><?= nawa_e($message) ?></textarea><small>حتى 8000 حرفًا</small></div></section><div class="send-row"><button class="nawa-button primary send-message" type="submit">إرسال الرسالة <i class="bi bi-send-fill"></i></button><span><i class="bi bi-shield-check"></i> ستظهر الرسالة داخل التطبيق للمستلمين</span></div></form></section>
+  </div>
+  <div class="link-fields" data-link-section data-link-fields <?= $includeLink ? '' : 'hidden' ?>><input type="hidden" name="include_link" value="<?= $includeLink ? '1' : '0' ?>" data-link-enabled><div class="link-insert-control"><button type="button" class="link-insert-button <?= $includeLink ? 'active' : '' ?>" data-link-toggle aria-expanded="<?= $includeLink ? 'true' : 'false' ?>"><i class="bi bi-link-45deg"></i> إدراج رابط</button></div><div class="link-inputs" data-link-inputs><div class="broadcast-field"><label>عنوان الرابط</label><input name="link_title" maxlength="180" value="<?= nawa_e($linkTitle) ?>" data-link-title placeholder="مثال: زيارة موقعنا"><small>هذا النص سيظهر باللون الأزرق للمستخدم</small></div><div class="broadcast-field"><label>الرابط</label><input name="link_url" maxlength="2048" value="<?= nawa_e($linkUrl) ?>" data-link-url inputmode="url" placeholder="https://example.com"><small>يفتح في متصفح المستخدم</small></div></div></div>
+  <section class="sent-history"><header><h2>آخر الرسائل المرسلة <i class="bi bi-chat-left-text-fill"></i></h2><p>عرض آخر الرسائل التي تم إرسالها من النظام</p></header><div class="history-table-wrap"><table class="broadcast-history"><thead><tr><th>#</th><th>العنوان</th><th>المحتوى</th><th>المستلمون</th><th>تاريخ الإرسال</th><th>الحالة</th></tr></thead><tbody><?php foreach ($rows as $index=>$row): ?><tr><td><?= $index + 1 ?></td><td><b><?= nawa_e($row['title']) ?></b></td><td><?= nawa_e(mb_strimwidth((string)$row['message'], 0, 54, '…')) ?></td><td>جميع المستخدمين (<?= number_format((int)$row['recipients']) ?>)</td><td><?= nawa_e($row['created_at']) ?></td><td><span class="history-status"><i class="bi bi-check-circle-fill"></i> تم الإرسال</span></td></tr><?php endforeach; if (!$rows): ?><tr><td colspan="6" class="history-empty">لا توجد رسائل مرسلة حتى الآن.</td></tr><?php endif; ?></tbody></table></div></section>
+  <section class="studio-tips"><h2>نصائح مهمة <i class="bi bi-lightbulb-fill"></i></h2><div><article><i class="bi bi-stars"></i><b>استخدم عناوين واضحة وجذابة</b><span>لزيادة نسبة فتح الرسائل.</span></article><article><i class="bi bi-bell"></i><b>تجنب الإرسال المتكرر</b><span>حتى لا تزعج المستخدمين.</span></article><article><i class="bi bi-people"></i><b>استهدف فئات محددة</b><span>للحصول على تفاعل أعلى.</span></article></div></section>
+</main>
+<script>
+(function(){const form=document.querySelector('[data-broadcast-form]');if(!form)return;const audience=form.querySelector('[data-audience]'),field=form.querySelector('[data-prefix-field]'),count=form.querySelector('[data-count]'),title=form.querySelector('[data-title]'),body=form.querySelector('[data-message]');audience.onchange=()=>{field.hidden=audience.value!=='ip_prefix';count.textContent=audience.value==='all'?'<?= number_format($allCount) ?> مشترك سيتلقون الرسالة':'سيتم احتساب العدد عند الإرسال حسب آخر IP';};title.oninput=()=>document.querySelector('[data-preview-title]').textContent=title.value||'عنوان الإشعار';body.oninput=()=>document.querySelector('[data-preview-body]').textContent=body.value||'سيظهر نص الرسالة هنا كاملًا عند دخول المشترك للتطبيق.';})();
+</script>
+<style>
+body.dark .dashboard-content,body[data-theme="dark"] .dashboard-content,html[data-theme="dark"] .dashboard-content{background:#020e1d!important;min-height:calc(100vh - 74px)!important;padding:0!important}
+body.dark .broadcast-page,body[data-theme="dark"] .broadcast-page,html[data-theme="dark"] .broadcast-page{--ink:#e8f1ff;--muted:#aac0df;--line:#174974;max-width:none!important;min-height:calc(100vh - 74px);margin:0!important;padding:28px 31px!important;background:radial-gradient(circle at 50% 0,#092a4b 0,#020e1d 47%)!important}
+body.dark .broadcast-card,body[data-theme="dark"] .broadcast-card,html[data-theme="dark"] .broadcast-card{background:linear-gradient(135deg,#082742,#04172b)!important;border-color:#174974!important;box-shadow:none!important}
+body.dark .broadcast-page>section:first-child,body[data-theme="dark"] .broadcast-page>section:first-child,html[data-theme="dark"] .broadcast-page>section:first-child{background:linear-gradient(110deg,#082945,#05182d)!important;border-color:#174974!important}
+body.dark .broadcast-page h1,body.dark .broadcast-page h2,body[data-theme="dark"] .broadcast-page h1,body[data-theme="dark"] .broadcast-page h2,html[data-theme="dark"] .broadcast-page h1,html[data-theme="dark"] .broadcast-page h2{color:#eaf2ff!important}
+body.dark .broadcast-page p,body.dark .broadcast-page label,body[data-theme="dark"] .broadcast-page p,body[data-theme="dark"] .broadcast-page label,html[data-theme="dark"] .broadcast-page p,html[data-theme="dark"] .broadcast-page label{color:#b3c9e8!important}
+body.dark .broadcast-field input,body.dark .broadcast-field textarea,body.dark .broadcast-field select,body[data-theme="dark"] .broadcast-field input,body[data-theme="dark"] .broadcast-field textarea,body[data-theme="dark"] .broadcast-field select,html[data-theme="dark"] .broadcast-field input,html[data-theme="dark"] .broadcast-field textarea,html[data-theme="dark"] .broadcast-field select{background:#04192e!important;border-color:#215384!important;color:#e8f2ff!important}
+body.dark .broadcast-count,body[data-theme="dark"] .broadcast-count,html[data-theme="dark"] .broadcast-count{background:#073842!important;border-color:#0e8067!important;color:#89f0c7!important}
+body.dark .broadcast-warning,body[data-theme="dark"] .broadcast-warning,html[data-theme="dark"] .broadcast-warning{background:#17344a!important;border-color:#285477!important;color:#c7daf2!important}
+body.dark .broadcast-preview,body[data-theme="dark"] .broadcast-preview,html[data-theme="dark"] .broadcast-preview{background:#051b32!important;border-color:#215384!important;color:#eaf2ff!important}
+body.dark .broadcast-preview span,body[data-theme="dark"] .broadcast-preview span,html[data-theme="dark"] .broadcast-preview span{color:#b3c9e8!important}
+body.dark .broadcast-history th,body[data-theme="dark"] .broadcast-history th,html[data-theme="dark"] .broadcast-history th{background:#082945!important;color:#cce0ff!important}
+body.dark .broadcast-history td,body.dark .broadcast-history th,body[data-theme="dark"] .broadcast-history td,body[data-theme="dark"] .broadcast-history th,html[data-theme="dark"] .broadcast-history td,html[data-theme="dark"] .broadcast-history th{border-color:#163c64!important;color:#d9e8ff!important}
+body.dark .nawa-button.primary,body[data-theme="dark"] .nawa-button.primary,html[data-theme="dark"] .nawa-button.primary{background:#1264db!important;border-color:#2789ff!important;color:#fff!important}
+</style>
+<script>
+(function(){
+  const option=document.querySelector('[data-audience] option[value="all"]');
+  if(option) option.textContent='كل مستخدمي التطبيق (<?= number_format($allCount) ?>)';
+  const count=document.querySelector('[data-count]');
+  const audience=document.querySelector('[data-audience]');
+  const setAppCount=()=>{if(count&&audience?.value==='all') count.textContent='<?= number_format($allCount) ?> مستخدم من التطبيق سيتلقون الرسالة';};
+  setAppCount();
+  audience?.addEventListener('change',setAppCount);
+})();
+</script>
+<style>
+/* Message studio design */
+.message-studio{max-width:none!important;min-height:calc(100vh - 74px);margin:0!important;padding:28px 30px 22px!important;direction:rtl;color:#102a58;background:linear-gradient(135deg,#f8fbff,#edf6ff)}.message-studio h1,.message-studio h2,.message-studio h3,.message-studio p{margin:0}.studio-hero{min-height:132px;display:grid;grid-template-columns:1fr 330px 1fr;align-items:center;gap:22px;padding:0 24px;margin-bottom:16px;overflow:hidden;border:1px solid #dbe9f9;border-radius:18px;background:linear-gradient(110deg,#fff 0%,#f4f9ff 54%,#fff 100%);box-shadow:0 5px 18px rgba(39,92,155,.04)}.studio-title{display:flex;align-items:center;gap:18px}.studio-icon{width:82px;height:82px;display:grid;place-items:center;border-radius:15px;background:linear-gradient(145deg,#dcecff,#bdd9ff);color:#096cff;font-size:42px;box-shadow:inset 0 1px #fff}.studio-title h1{font-size:32px;font-weight:900;letter-spacing:-1px}.studio-title p{margin-top:7px;color:#6b83a6;font-size:14px}.hero-mini-phone{position:relative;align-self:end;height:126px;width:190px;margin:auto;border:6px solid #152747;border-bottom:0;border-radius:25px 25px 0 0;background:radial-gradient(circle at 30% 22%,#1d7efa,#0d315f 34%,#061a32 68%);box-shadow:0 0 0 4px #ddeeff,0 10px 22px #133c751f}.hero-notch{position:absolute;z-index:1;top:5px;left:50%;width:74px;height:15px;transform:translateX(-50%);border-radius:0 0 10px 10px;background:#0b1830}.hero-push{position:absolute;top:51px;right:-29px;left:-29px;display:grid;grid-template-columns:32px 1fr;gap:2px 8px;padding:10px;border:1px solid #c6dcfa;border-radius:12px;background:#fffffff2;box-shadow:0 8px 20px #08295e30;color:#142c5c;font-size:11px}.hero-push i{grid-row:span 2;display:grid;place-items:center;border-radius:7px;background:#10223d;color:#ff445d;font-size:19px}.hero-push span{color:#6980a5}.hero-stat{display:flex;justify-content:flex-end;align-items:center;gap:13px}.hero-stat-icon{width:68px;height:68px;display:grid;place-items:center;border-radius:16px;background:#edf4ff;color:#1378f6;font-size:32px}.hero-stat b,.hero-stat small{display:block;text-align:right}.hero-stat b{font-size:16px}.hero-stat small{margin-top:6px;color:#6e85a7}.studio-workspace{display:grid;grid-template-columns:34% 1fr;gap:16px;align-items:stretch}.phone-preview-panel,.composer-card,.sent-history,.studio-tips{border:1px solid #dbe9f9;border-radius:17px;background:#fff;box-shadow:0 5px 18px rgba(39,92,155,.045)}.phone-preview-panel{padding:18px 18px 12px;text-align:center}.phone-preview-panel header{padding-bottom:12px;border-bottom:1px solid #e1ebf8}.phone-preview-panel h2,.composer-card h2,.sent-history h2{font-size:20px;font-weight:900}.phone-preview-panel h2 i,.composer-heading h2 i,.sent-history h2 i{color:#1679f8;margin-right:8px}.phone-preview-panel header p,.composer-heading p,.sent-history header p{margin-top:5px;color:#7890ad;font-size:12px}.phone-shell{position:relative;min-height:442px;max-width:326px;margin:15px auto 8px;padding:76px 20px 24px;overflow:hidden;border:7px solid #17202d;border-radius:42px 42px 24px 24px;background:radial-gradient(circle at 25% 23%,#315f9c 0,#102e58 25%,#051426 66%,#0b1c37);box-shadow:inset 0 0 0 1px #52657e,0 10px 18px #1b355133}.phone-shell:before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,transparent 45%,#1e5b9f90 45.5%,transparent 66%);pointer-events:none}.phone-speaker{position:absolute;z-index:1;top:12px;right:50%;width:105px;height:19px;transform:translateX(50%);border-radius:0 0 13px 13px;background:#060a10}.phone-clock,.phone-date{position:relative;z-index:1;color:#fff}.phone-clock{font-size:43px;font-weight:300;letter-spacing:2px}.phone-date{margin-top:3px;font-size:13px}.phone-notification{position:relative;z-index:1;margin-top:25px;padding:12px;text-align:right;border:1px solid #ffffff30;border-radius:14px;background:#ffffffee;box-shadow:0 6px 15px #0005;color:#17294c}.notification-brand{display:grid;grid-template-columns:29px 1fr auto;align-items:center;gap:7px;margin-bottom:11px;font-size:11px}.notification-brand i{display:grid;place-items:center;width:28px;height:28px;border-radius:7px;background:#10213b;color:#ff4660;font-size:16px}.notification-brand small{color:#7081a0}.phone-notification strong,.phone-notification span{display:block}.phone-notification strong{font-size:13px}.phone-notification span{margin-top:6px;color:#536987;font-size:12px;line-height:1.55}.preview-note{color:#6c84a7!important;font-size:12px}.composer-card{padding:21px 18px}.composer-heading{padding:0 2px 13px;border-bottom:1px solid #e1ebf8}.composer-heading h2{font-size:22px}.audience-native{position:absolute;opacity:0;pointer-events:none}.form-step{padding:16px 0 0}.step-heading{display:flex;align-items:center;gap:10px;margin-bottom:12px}.step-heading>span{width:35px;height:35px;display:grid;place-items:center;border-radius:50%;background:linear-gradient(145deg,#2688ff,#0869e9);box-shadow:0 5px 10px #1377ec35;color:#fff;font-weight:900}.step-heading h3{font-size:17px}.step-heading p{margin-top:3px;color:#7d92b0;font-size:12px}.audience-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:11px}.audience-card{min-height:108px;padding:12px 7px;border:1px solid #d8e6f7;border-radius:11px;background:#fbfdff;color:#183464;cursor:pointer;font:inherit;transition:.16s}.audience-card:hover{border-color:#8fbeff;background:#f4f9ff}.audience-card i,.audience-card b,.audience-card small{display:block}.audience-card i{font-size:28px;color:#197af7;margin-bottom:8px}.audience-card b{font-size:14px}.audience-card small{margin-top:6px;color:#7d93b1;font-size:11px}.audience-card.selected{border:2px solid #1678f7;background:linear-gradient(135deg,#eff6ff,#dcecff);box-shadow:0 5px 12px #1779ed22}.audience-card.disabled{opacity:.53;cursor:not-allowed}.prefix-wrap{margin-top:10px}.prefix-wrap label{display:block;margin-bottom:6px;font-size:13px;font-weight:700}.prefix-wrap input,.broadcast-field input,.broadcast-field textarea{box-sizing:border-box;width:100%;border:1px solid #d6e4f5;border-radius:10px;background:#fff;color:#173867;font:inherit;outline:0}.prefix-wrap input{height:42px;padding:0 12px}.recipient-count{margin-top:10px;padding:10px 12px;border:1px solid #bdebd7;border-radius:9px;background:#effbf5;color:#087f56;font-size:13px;font-weight:700}.message-step{padding-top:20px}.broadcast-field{position:relative;margin:11px 0}.broadcast-field label{display:block;margin-bottom:6px;color:#355783;font-size:13px;font-weight:800}.broadcast-field input{height:47px;padding:0 12px}.broadcast-field textarea{min-height:91px;padding:11px 12px;resize:vertical}.broadcast-field small{position:absolute;left:12px;bottom:12px;color:#8195b2;font-size:11px}.send-row{display:flex;justify-content:space-between;align-items:center;margin-top:19px}.send-message{padding:14px 25px!important;border-radius:9px!important;background:#0d6efd!important;border-color:#0d6efd!important;box-shadow:0 6px 14px #0d6efd3b!important;font-size:15px}.send-message i{margin-right:7px}.send-row span{color:#748aa9;font-size:12px}.send-row span i{color:#16a56f;margin-left:4px}.sent-history{margin-top:16px;overflow:hidden}.sent-history header{padding:17px 20px 12px}.history-table-wrap{overflow:auto}.broadcast-history{width:100%;border-collapse:collapse;white-space:nowrap}.broadcast-history th{padding:11px 15px;background:#f4f9ff;color:#5f7da5;font-size:12px}.broadcast-history td{padding:12px 15px;border-top:1px solid #e7eef7;color:#284b78;font-size:12px}.history-status{padding:6px 10px;border-radius:16px;background:#eaf9f1;color:#0a9a62;font-weight:700}.history-status i{margin-left:4px}.history-empty{text-align:center;color:#8094ae}.studio-tips{display:flex;align-items:center;gap:24px;margin-top:16px;padding:13px 20px}.studio-tips h2{flex:none;font-size:17px}.studio-tips h2 i{color:#ff9800;margin-right:7px}.studio-tips>div{display:grid;flex:1;grid-template-columns:repeat(3,1fr);gap:13px}.studio-tips article{display:grid;grid-template-columns:34px 1fr;gap:0 8px;padding:8px 13px;border:1px solid #e1ebf7;border-radius:10px}.studio-tips article i{grid-row:span 2;align-self:center;color:#1c7af5;font-size:22px}.studio-tips article b{font-size:12px}.studio-tips article span{margin-top:3px;color:#7890ae;font-size:11px}.message-studio .broadcast-alert{margin:0 0 16px;border-radius:12px;padding:13px 17px}
+@media(max-width:1050px){.studio-hero{grid-template-columns:1fr 190px}.hero-stat{display:none}.studio-workspace{grid-template-columns:1fr}.phone-preview-panel{display:none}.studio-tips{display:block}.studio-tips>div{margin-top:12px}}@media(max-width:700px){.message-studio{padding:14px!important}.studio-hero{grid-template-columns:1fr;min-height:0;padding:18px}.hero-mini-phone{display:none}.studio-title h1{font-size:26px}.studio-icon{width:62px;height:62px;font-size:31px}.audience-cards{grid-template-columns:1fr}.audience-card{min-height:78px}.send-row{align-items:flex-start;flex-direction:column;gap:12px}.studio-tips>div{grid-template-columns:1fr}.studio-tips article{min-height:38px}}
+</style>
+<style>
+:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .message-studio{color:#eaf2ff!important;background:radial-gradient(circle at 50% 0,#0a2b4b 0,#031426 45%,#020d1b 100%)!important}:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .studio-hero,:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .phone-preview-panel,:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .composer-card,:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .sent-history,:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .studio-tips{background:linear-gradient(135deg,#082742,#04172b)!important;border-color:#174974!important;box-shadow:none!important}:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .studio-title h1,:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .message-studio h2,:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .message-studio h3,:is(body.dark,body[data-theme="dark"] body) .hero-stat b{color:#eef5ff!important}:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .studio-title p,:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .hero-stat small,:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .phone-preview-panel header p,:is(body.dark,body[data-theme="dark"] body) .composer-heading p,:is(body.dark,body[data-theme="dark"] body) .sent-history header p,:is(body.dark,body[data-theme="dark"] body) .step-heading p{color:#aac0df!important}:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .hero-stat{background:#061d35;border:1px solid #174974;border-radius:14px;padding:13px}:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .hero-stat-icon{background:#1b2735;color:#ff9731}:is(body.dark,body[data-theme="dark"] body) .composer-heading,:is(body.dark,body[data-theme="dark"] body) .phone-preview-panel header{border-color:#17426c!important}:is(body.dark,body[data-theme="dark"] body) .audience-card{background:#061d35;border-color:#1b527f;color:#eaf2ff}:is(body.dark,body[data-theme="dark"] body) .audience-card small{color:#9fb8da}:is(body.dark,body[data-theme="dark"] body) .audience-card.selected{background:linear-gradient(135deg,#0a3b78,#082750);border-color:#2088ff}:is(body.dark,body[data-theme="dark"] body) .prefix-wrap input,:is(body.dark,body[data-theme="dark"] body) .broadcast-field input,:is(body.dark,body[data-theme="dark"] body) .broadcast-field textarea{background:#04192e!important;border-color:#215384!important;color:#e8f2ff!important}:is(body.dark,body[data-theme="dark"] body) .broadcast-field label,:is(body.dark,body[data-theme="dark"] body) .prefix-wrap label{color:#c8dcf7!important}:is(body.dark,body[data-theme="dark"] body) .recipient-count{background:#073842;border-color:#0e8067;color:#89f0c7}:is(body.dark,body[data-theme="dark"] body) .broadcast-history th{background:#09243d;color:#9fc1e9}:is(body.dark,body[data-theme="dark"] body) .broadcast-history td{border-color:#173a5b;color:#d8e7fb}:is(body.dark,body[data-theme="dark"] body) .studio-tips article{border-color:#17426c}:is(body.dark,body[data-theme="dark"] body) .studio-tips article span,:is(body.dark,body[data-theme="dark"] body) .send-row span,:is(body.dark,body[data-theme="dark"] body) .preview-note{color:#aac0df!important}
+</style>
+<script>
+(function(){
+  const form=document.querySelector('[data-broadcast-form]');if(!form)return;
+  const audience=form.querySelector('[data-audience]'),count=form.querySelector('[data-count]'),prefix=form.querySelector('[data-prefix-field]');
+  const cards=[...document.querySelectorAll('[data-audience-choice]')];
+  const sync=()=>{const selected=audience.value;cards.forEach(card=>card.classList.toggle('selected',card.dataset.audienceChoice===selected));prefix.hidden=selected!=='ip_prefix';if(selected==='all')count.textContent='<?= number_format($allCount) ?> مستخدم من التطبيق سيتلقون الرسالة';};
+  cards.forEach(card=>card.addEventListener('click',()=>{audience.value=card.dataset.audienceChoice;audience.dispatchEvent(new Event('change'));sync();}));
+  audience.addEventListener('change',sync);sync();
+})();
+</script>
+<script>
+(function(){
+  const form=document.querySelector('[data-broadcast-form]');if(!form)return;
+  form.addEventListener('submit',async function(event){
+    event.preventDefault();
+    const button=form.querySelector('button[type="submit"]');
+    const original=button?button.innerHTML:'';
+    if(button){button.disabled=true;button.textContent='جاري جدولة الرسالة...';}
+    try{
+      const response=await fetch('nawa-notifications.php?fragment=1',{method:'POST',body:new FormData(form),credentials:'same-origin',cache:'no-store'});
+      if(!response.ok)throw new Error('HTTP '+response.status);
+      if(window.nawaFragmentCache)window.nawaFragmentCache.clear();
+      if(window.loadSection){window.loadSection('nawa-notifications.php?fragment=1&refresh='+Date.now());}
+      else{window.location.href='nawa-notifications.php';}
+    }catch(error){
+      if(button){button.disabled=false;button.innerHTML=original;}
+      window.alert('تعذر إرسال الرسالة الآن. حاول مرة أخرى.');
+    }
+  });
+})();
+</script>
+<style>
+.link-fields{margin-top:14px;padding-top:13px;border-top:1px dashed #d6e4f5}.link-insert-control{display:flex;justify-content:flex-start}.link-insert-button{display:inline-flex;align-items:center;gap:7px;padding:9px 14px;border:1px solid #8ebcff;border-radius:9px;background:#f3f8ff;color:#1264db;cursor:pointer;font:700 13px inherit}.link-insert-button:hover,.link-insert-button.active{border-color:#1264db;background:#e6f0ff}.link-insert-button i{font-size:17px}.link-inputs{padding-top:3px}[data-link-section][hidden]{display:block!important}[data-link-section][hidden] .link-inputs{display:none}
+:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .link-fields{border-color:#215384}:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .link-insert-button{border-color:#287bd1;background:#082b4b;color:#8fc4ff}:is(body.dark,body[data-theme="dark"],html[data-theme="dark"] body) .link-insert-button.active{border-color:#58a4ff;background:#0b4175;color:#dceeff}
+</style>
+<script>
+(function(){
+  const form=document.querySelector('[data-broadcast-form]');
+  const section=document.querySelector('[data-link-section]');
+  const messageStep=form?.querySelector('.message-step');
+  if(!form||!section||!messageStep)return;
+  messageStep.append(section);
+  const toggle=section.querySelector('[data-link-toggle]');
+  const enabled=section.querySelector('[data-link-enabled]');
+  const title=section.querySelector('[data-link-title]');
+  const url=section.querySelector('[data-link-url]');
+  const setEnabled=(active)=>{section.hidden=!active;enabled.value=active?'1':'0';toggle.classList.toggle('active',active);toggle.setAttribute('aria-expanded',String(active));title.required=active;url.required=active;};
+  toggle.addEventListener('click',()=>setEnabled(section.hidden));
+  setEnabled(!section.hidden);
+})();
+</script>
+<?php include '../common/includes/db_close.php'; if ($fragmentMode) { } else { print_footer_and_html_epilogue(); } ?>

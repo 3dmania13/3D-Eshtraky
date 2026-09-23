@@ -5,6 +5,8 @@ import '../../../core/auth/token_storage.dart';
 import '../../../core/config/app_config.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../subscriber/domain/subscriber.dart';
+import '../../notifications/data/push_device_binding.dart';
+import '../../notifications/data/notification_preferences.dart';
 import '../data/auth_repository.dart';
 
 enum AuthStatus { restoring, unauthenticated, authenticating, authenticated }
@@ -22,13 +24,14 @@ class AuthState {
 }
 
 class AuthController extends StateNotifier<AuthState> {
-  AuthController(this._repository, this._tokenStorage)
+  AuthController(this._repository, this._tokenStorage, {this.push})
     : super(const AuthState.restoring()) {
     restore();
   }
 
   final AuthRepository _repository;
   final TokenStorage _tokenStorage;
+  final PushDeviceBinding? push;
 
   Future<void> restore() async {
     try {
@@ -40,6 +43,7 @@ class AuthController extends StateNotifier<AuthState> {
         return;
       }
       final subscriber = await _repository.restoreSubscriber();
+      push?.start(subscriber.username);
       state = AuthState(
         status: AuthStatus.authenticated,
         subscriber: subscriber,
@@ -61,6 +65,7 @@ class AuthController extends StateNotifier<AuthState> {
         ),
       );
       final subscriber = await _repository.restoreSubscriber();
+      push?.start(subscriber.username);
       state = AuthState(
         status: AuthStatus.authenticated,
         subscriber: subscriber,
@@ -95,9 +100,20 @@ class AuthController extends StateNotifier<AuthState> {
     await expireSession();
   }
 
+  Future<void> syncPushPreferences() async {
+    await push?.syncPreferences();
+  }
+
   Future<void> expireSession() async {
+    await push?.stop();
     await _tokenStorage.clear();
     state = const AuthState(status: AuthStatus.unauthenticated);
+  }
+
+  @override
+  void dispose() {
+    push?.dispose();
+    super.dispose();
   }
 }
 
@@ -125,5 +141,11 @@ final StateNotifierProvider<AuthController, AuthState> authControllerProvider =
       (ref) => AuthController(
         ref.watch(authRepositoryProvider),
         ref.watch(tokenStorageProvider),
+        push: AppConfig.useMockData
+            ? null
+            : PushDeviceBinding(
+                ref.watch(tokenStorageProvider),
+                NotificationPreferencesStore(),
+              ),
       ),
     );

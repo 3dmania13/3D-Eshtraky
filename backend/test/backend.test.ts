@@ -23,6 +23,7 @@ import type {
   UsageSummaryRecord,
 } from '../src/domain/models.js';
 import { DeviceService } from '../src/devices/device-service.js';
+import { DeviceSpeedService } from '../src/devices/device-speed-service.js';
 import { AppError } from '../src/errors.js';
 import { NotificationService } from '../src/notifications/notification-service.js';
 import { RechargeService } from '../src/recharges/recharge-service.js';
@@ -30,6 +31,8 @@ import { QuotaService } from '../src/services/quota-service.js';
 import { SubscriptionService } from '../src/services/subscription-service.js';
 import { SessionService } from '../src/sessions/session-service.js';
 import { SubscriberService } from '../src/subscriber/subscriber-service.js';
+import { SpeedService } from '../src/speed/speed-service.js';
+import { ConnectionLimitService } from '../src/connection-limits/connection-limit-service.js';
 import { UsageService } from '../src/usage/usage-service.js';
 
 const now = new Date('2026-08-30T12:00:00.000Z');
@@ -72,6 +75,7 @@ class FakeAuthRepository implements AuthRepository {
 
 class FakeSubscriberRepository implements SubscriberRepository {
   readonly dashboardUsernames: string[] = [];
+  connectionLimit: number | null = 2;
 
   async getProfile(username: string): Promise<SubscriberProfileRecord> {
     return {
@@ -125,6 +129,12 @@ class FakeSubscriberRepository implements SubscriberRepository {
     return null;
   }
 
+  async setDeviceSpeed(): Promise<DeviceRecord | null> {
+    return null;
+  }
+
+  async invalidateDeviceSpeedApplications(): Promise<void> {}
+
   async getRecharges(): Promise<RechargeRecord[]> {
     return [];
   }
@@ -140,6 +150,27 @@ class FakeSubscriberRepository implements SubscriberRepository {
 
   async markNotificationRead(): Promise<boolean> {
     return false;
+  }
+
+  async markAllNotificationsRead(): Promise<number> {
+    return 0;
+  }
+
+  async registerPushToken(): Promise<void> {}
+
+  async getSpeedSelection(): Promise<string> { return 'open'; }
+
+  async setSpeedSelection(): Promise<void> {}
+
+  async getConnectionLimit(): Promise<number | null> {
+    return this.connectionLimit;
+  }
+
+  async setConnectionLimit(input: {
+    username: string;
+    limit: number;
+  }): Promise<void> {
+    this.connectionLimit = input.limit;
   }
 }
 
@@ -241,8 +272,11 @@ async function testApp(repository: FakeSubscriberRepository) {
       usage: new UsageService(repository, 'Asia/Aden', () => now),
       sessions: new SessionService(repository),
       devices: new DeviceService(repository),
+      deviceSpeeds: new DeviceSpeedService(repository),
       recharges: new RechargeService(repository),
       notifications: new NotificationService(repository, subscriptions, quota, () => now),
+      speed: new SpeedService(repository),
+      connectionLimits: new ConnectionLimitService(repository),
     },
   });
 }
@@ -280,4 +314,43 @@ test('subscriber identity comes from JWT and cannot be replaced by query data', 
   assert.equal(response.statusCode, 200);
   assert.equal(response.json().username, 'alice');
   assert.deepEqual(repository.dashboardUsernames, ['alice']);
+});
+
+test('subscriber can save the RADIUS concurrent-connection limit', async (context) => {
+  const repository = new FakeSubscriberRepository();
+  const app = await testApp(repository);
+  context.after(() => app.close());
+  const token = app.jwt.sign({
+    sub: 'alice',
+    username: 'alice',
+    role: 'subscriber',
+    status: 'active',
+  });
+  const headers = { authorization: `Bearer ${token}` };
+
+  const current = await app.inject({
+    method: 'GET',
+    url: '/api/v1/subscriber/connection-limit',
+    headers,
+  });
+  assert.equal(current.statusCode, 200);
+  assert.equal(current.json().limit, 2);
+
+  const saved = await app.inject({
+    method: 'PUT',
+    url: '/api/v1/subscriber/connection-limit',
+    headers,
+    payload: { limit: 3 },
+  });
+  assert.equal(saved.statusCode, 200);
+  assert.equal(saved.json().limit, 3);
+  assert.equal(repository.connectionLimit, 3);
+
+  const invalid = await app.inject({
+    method: 'PUT',
+    url: '/api/v1/subscriber/connection-limit',
+    headers,
+    payload: { limit: 11 },
+  });
+  assert.equal(invalid.statusCode, 400);
 });

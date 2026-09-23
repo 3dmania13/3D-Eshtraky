@@ -6,6 +6,8 @@ import '../../features/devices/data/device_repository.dart';
 import '../../features/devices/domain/subscriber_device.dart';
 import '../../features/notifications/data/notification_repository.dart';
 import '../../features/notifications/data/push_notification_service.dart';
+import '../../features/notifications/data/notification_preferences.dart';
+import '../../features/notifications/application/notification_preferences_controller.dart';
 import '../../features/notifications/domain/subscriber_notification.dart';
 import '../../features/recharges/data/recharge_repository.dart';
 import '../../features/recharges/domain/recharge_transaction.dart';
@@ -40,7 +42,15 @@ final notificationRepositoryProvider = Provider<NotificationRepository>(
       : ApiNotificationRepository(ref.watch(apiClientProvider)),
 );
 final pushNotificationServiceProvider = Provider<PushNotificationService>(
-  (ref) => const DisabledPushNotificationService(),
+  (ref) => FirebasePushNotificationService.instance,
+);
+final notificationPreferencesStoreProvider =
+    Provider<NotificationPreferencesStore>((ref) => NotificationPreferencesStore());
+final notificationPreferencesProvider = StateNotifierProvider<
+    NotificationPreferencesController, NotificationPreferences>(
+  (ref) => NotificationPreferencesController(
+    ref.watch(notificationPreferencesStoreProvider),
+  ),
 );
 
 final subscriberProvider = FutureProvider<Subscriber>((ref) {
@@ -106,7 +116,3 @@ final unreadNotificationCountProvider = Provider<int>((ref) {
         orElse: () => 0,
       );
 });
-
-final subscriptionAlertsProvider = StateProvider<bool>((ref) => true);
-final deviceAlertsProvider = StateProvider<bool>((ref) => true);
-final systemMessagesProvider = StateProvider<bool>((ref) => true);

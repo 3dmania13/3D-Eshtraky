@@ -47,6 +47,10 @@ abstract final class AppStrings {
   static const activeDevices = 'الأجهزة النشطة';
   static const previousDevices = 'أجهزة شوهدت سابقًا';
   static const rename = 'تغيير الاسم';
+  static const disconnectDevice = 'فصل الجهاز';
+  static const disconnectDeviceConfirm = 'هل تريد فصل هذا الجهاز من الشبكة؟';
+  static const disconnect = 'فصل';
+  static const deviceDisconnected = 'تم فصل الجهاز من الشبكة.';
   static const deviceName = 'اسم الجهاز';
   static const save = 'حفظ';
   static const cancel = 'إلغاء';

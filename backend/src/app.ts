@@ -1,24 +1,32 @@
-import helmet from '@fastify/helmet';
-import jwt from '@fastify/jwt';
-import rateLimit from '@fastify/rate-limit';
-import Fastify, { type FastifyInstance } from 'fastify';
-import type { Pool } from 'mysql2/promise';
+import helmet from "@fastify/helmet";
+import jwt from "@fastify/jwt";
+import rateLimit from "@fastify/rate-limit";
+import Fastify, { type FastifyInstance } from "fastify";
+import type { Pool } from "mysql2/promise";
 
-import { AuthService, type AccessTokenSigner } from './auth/auth-service.js';
-import type { AppConfig } from './config/index.js';
-import { createPool } from './database/pool.js';
-import { MySqlSubscriberRepository } from './database/mysql-subscriber-repository.js';
-import { DeviceService } from './devices/device-service.js';
-import { AppError, toPublicError } from './errors.js';
-import { registerRoutes } from './modules/routes.js';
-import type { AppServices } from './modules/services.js';
-import { NotificationService } from './notifications/notification-service.js';
-import { RechargeService } from './recharges/recharge-service.js';
-import { QuotaService } from './services/quota-service.js';
-import { SubscriptionService } from './services/subscription-service.js';
-import { SessionService } from './sessions/session-service.js';
-import { SubscriberService } from './subscriber/subscriber-service.js';
-import { UsageService } from './usage/usage-service.js';
+import { AuthService, type AccessTokenSigner } from "./auth/auth-service.js";
+import type { AppConfig } from "./config/index.js";
+import { createPool } from "./database/pool.js";
+import { MySqlSubscriberRepository } from "./database/mysql-subscriber-repository.js";
+import { DeviceService } from "./devices/device-service.js";
+import { MySqlLiveDeviceDisconnector } from "./devices/live-device-disconnect-service.js";
+import { DeviceSpeedService } from "./devices/device-speed-service.js";
+import { MySqlLiveDeviceSpeedApplier } from "./devices/live-device-speed-service.js";
+import { AppError, toPublicError } from "./errors.js";
+import { registerRoutes } from "./modules/routes.js";
+import type { AppServices } from "./modules/services.js";
+import { NotificationService } from "./notifications/notification-service.js";
+import { registerPushRoutes } from "./notifications/push-routes.js";
+import { registerFeedbackRoutes } from "./feedback/feedback-routes.js";
+import { RechargeService } from "./recharges/recharge-service.js";
+import { QuotaService } from "./services/quota-service.js";
+import { SubscriptionService } from "./services/subscription-service.js";
+import { SessionService } from "./sessions/session-service.js";
+import { SubscriberService } from "./subscriber/subscriber-service.js";
+import { SpeedService } from "./speed/speed-service.js";
+import { MySqlLiveSpeedApplier } from "./speed/live-speed-service.js";
+import { ConnectionLimitService } from "./connection-limits/connection-limit-service.js";
+import { UsageService } from "./usage/usage-service.js";
 
 export interface AppOverrides {
   readonly services?: AppServices;
@@ -36,13 +44,13 @@ export async function createApp(
       level: config.logLevel,
       redact: {
         paths: [
-          'req.headers.authorization',
-          'req.body.password',
-          'req.body.code',
-          'req.body.refreshToken',
-          'res.headers.authorization',
+          "req.headers.authorization",
+          "req.body.password",
+          "req.body.code",
+          "req.body.refreshToken",
+          "res.headers.authorization",
         ],
-        censor: '[REDACTED]',
+        censor: "[REDACTED]",
       },
     },
   });
@@ -64,7 +72,7 @@ export async function createApp(
           {
             sub: principal.username,
             username: principal.username,
-            role: 'subscriber',
+            role: "subscriber",
             status: principal.status,
           },
           { expiresIn: config.auth.accessTokenTtl },
@@ -80,29 +88,41 @@ export async function createApp(
       subscriber: new SubscriberService(repository, subscriptions, quota),
       usage: new UsageService(repository, config.localTimezone),
       sessions: new SessionService(repository),
-      devices: new DeviceService(repository),
+      devices: new DeviceService(
+        repository,
+        new MySqlLiveDeviceDisconnector(ownedPool),
+      ),
+      deviceSpeeds: new DeviceSpeedService(
+        repository,
+        new MySqlLiveDeviceSpeedApplier(ownedPool),
+      ),
       recharges: new RechargeService(repository),
       notifications: new NotificationService(repository, subscriptions, quota),
+      speed: new SpeedService(repository, new MySqlLiveSpeedApplier(ownedPool)),
+      connectionLimits: new ConnectionLimitService(repository),
     };
   }
 
   if (ownedPool && !overrides.pool) {
-    app.addHook('onClose', async () => ownedPool?.end());
+    app.addHook("onClose", async () => ownedPool?.end());
   }
 
   app.setNotFoundHandler(async (_request, reply) =>
-    reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'المسار غير موجود.' } }),
+    reply
+      .code(404)
+      .send({ error: { code: "NOT_FOUND", message: "المسار غير موجود." } }),
   );
   app.setErrorHandler(async (error, request, reply) => {
     const validation =
-      typeof error === 'object' &&
+      typeof error === "object" &&
       error !== null &&
-      'validation' in error &&
+      "validation" in error &&
       Boolean(error.validation);
     const publicError = validation
-      ? new AppError(400, 'VALIDATION_ERROR', 'بيانات الطلب غير صالحة.')
+      ? new AppError(400, "VALIDATION_ERROR", "بيانات الطلب غير صالحة.")
       : toPublicError(error);
-    if (publicError.statusCode >= 500) request.log.error({ err: error }, 'request failed');
+    if (publicError.statusCode >= 500)
+      request.log.error({ err: error }, "request failed");
     return reply.code(publicError.statusCode).send({
       error: {
         code: publicError.code,
@@ -113,5 +133,9 @@ export async function createApp(
   });
 
   registerRoutes(app, services);
+  if (ownedPool) {
+    registerPushRoutes(app, ownedPool);
+    registerFeedbackRoutes(app, ownedPool);
+  }
   return app;
 }

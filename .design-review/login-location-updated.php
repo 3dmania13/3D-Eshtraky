@@ -1,0 +1,235 @@
+<?php
+/*
+ *********************************************************************************************************
+ * daloRADIUS - RADIUS Web Platform
+ * Copyright (C) 2007 - Liran Tal <liran@lirantal.com> All Rights Reserved.
+ *
+ * 3D Radius operator login skin. Authentication, sessions and CSRF validation remain handled by daloRADIUS.
+ *********************************************************************************************************
+ */
+
+include_once("library/sessions.php");
+dalo_session_start();
+
+if (array_key_exists('daloradius_logged_in', $_SESSION)
+    && $_SESSION['daloradius_logged_in'] !== false) {
+    header('Location: index.php');
+    exit;
+}
+
+// Exports $langCode, $configValues and the t() translation helper.
+include("lang/main.php");
+
+$onlyDefaultLocation = !(array_key_exists('CONFIG_LOCATIONS', $configValues)
+                        && is_array($configValues['CONFIG_LOCATIONS'])
+                        && count($configValues['CONFIG_LOCATIONS']) > 0);
+
+$dir = (strtolower($langCode) === 'ar') ? "rtl" : "ltr";
+?>
+<!DOCTYPE html>
+<html lang="<?= htmlspecialchars($langCode, ENT_QUOTES, 'UTF-8') ?>" dir="<?= $dir ?>">
+<head>
+    <title>3D Radius :: <?= htmlspecialchars(t('text', 'LoginRequired'), ENT_QUOTES, 'UTF-8') ?></title>
+    <meta charset="utf-8">
+    <meta http-equiv="content-type" content="text/html; charset=utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+
+    <link rel="apple-touch-icon" href="static/images/3d-radius-logo.png">
+    <link rel="icon" type="image/png" href="static/images/3d-radius-logo.png">
+    <link rel="manifest" href="static/images/favicon/site.webmanifest">
+
+    <link rel="stylesheet" href="static/css/bootstrap.min.css">
+    <link rel="stylesheet" href="static/css/icons/bootstrap-icons.min.css">
+    <link rel="stylesheet" href="static/css/nawa-theme.css">
+    <link rel="stylesheet" href="theme.php">
+<style id="login-reference-design">
+/* Login presentation: no authentication or stored-data changes. */
+.nawa-login-page{--login-ink:#0a1726;--login-muted:#62758c;--login-border:#dbe5f0;--login-card:rgba(255,255,255,.86);--login-field:rgba(255,255,255,.68);margin:0;color:var(--login-ink);background:#f6faff;font-family:Tahoma,Arial,sans-serif}
+.nawa-login-shell{display:grid;grid-template-columns:42% 58%;min-height:100vh;direction:rtl}
+.nawa-login-panel{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:30px;padding:108px 7.5% 35px;background:radial-gradient(ellipse at 100% 0,#ffe8ee66,transparent 50%),linear-gradient(135deg,#f4f9ff,#fff);min-width:0}
+.nawa-login-card{width:100%;max-width:585px;border:1px solid var(--login-border);border-top-color:#ff5572;border-inline-start-color:#ff5572;border-radius:28px;padding:30px 36px 24px;background:var(--login-card);box-shadow:0 14px 38px #23496d10;backdrop-filter:blur(20px);color:var(--login-ink)}
+.nawa-login-card .nawa-brand{display:flex;justify-content:center;margin:0 auto 22px;width:max-content}
+.nawa-login-card .nawa-brand-mark{display:grid;place-items:center;width:108px;height:102px;border:1px solid var(--login-border);border-radius:24px;background:linear-gradient(#fff,#dde9f5);box-shadow:0 9px 19px #385a7b14}
+.nawa-login-card .nawa-brand-mark img{width:88px;height:80px;object-fit:contain}
+.nawa-login-card .nawa-brand-copy{display:none}
+.nawa-login-card h1{text-align:center;font-size:32px;line-height:1.5;color:var(--login-ink);font-weight:800;margin:0 0 4px;letter-spacing:-.6px}
+.nawa-login-card>p{text-align:center;font-size:16px;line-height:1.9;color:var(--login-muted);margin:0 0 24px}
+.nawa-login-card .form-label{display:block;font-size:13px;font-weight:700;color:var(--login-ink);margin-bottom:8px}
+.nawa-login-card .form-control,.nawa-login-card .form-select{width:100%;height:50px;border:1px solid var(--login-border);border-radius:11px;background-color:var(--login-field);color:var(--login-ink);box-shadow:none;font-size:13px;padding-inline:15px 45px}
+.nawa-login-card .form-control:focus,.nawa-login-card .form-select:focus{border-color:#f34254;box-shadow:0 0 0 3px #ef233b16;outline:0}
+.nawa-login-card .form-control::placeholder{color:var(--login-muted);opacity:1}
+.nawa-login-card .form-select:disabled{opacity:1;color:var(--login-ink);background-color:var(--login-field)}
+.nawa-login-card .mb-3{position:relative;margin-bottom:20px!important}
+.nawa-login-card .mb-4{margin-bottom:28px!important}
+.login-field-icon{position:absolute;bottom:13px;left:16px;font-size:20px;pointer-events:none;color:var(--login-ink)}
+.nawa-login-card #operator_pass{padding-inline-start:42px}
+.login-password-toggle{position:absolute;bottom:5px;right:5px;display:grid;place-items:center;width:38px;height:40px;background:none;border:0;color:var(--login-muted);border-radius:8px;cursor:pointer}
+.nawa-login-card .btn-primary{display:flex;justify-content:center;align-items:center;gap:15px;min-height:54px;border:1px solid #f63d4d;border-radius:12px;background:linear-gradient(170deg,#f73b46,#ef1017);font-size:17px;font-weight:700;color:#fff;box-shadow:0 12px 25px #ee253d20}
+.nawa-login-card .btn-primary:hover{background:linear-gradient(170deg,#f02a37,#d70715)}
+.nawa-login-card>small{color:var(--login-muted)!important;font-size:11px;padding-top:16px;border-top:1px solid var(--login-border)}
+.login-appearance{position:absolute;top:28px;inset-inline-end:8%;display:flex;align-items:center;gap:14px;color:var(--login-ink)}
+.login-language{display:flex;gap:12px;align-items:center;padding:12px 20px;border:1px solid var(--login-border);border-radius:30px;font-size:14px;background:var(--login-card)}
+.login-theme-toggle{display:grid;place-items:center;width:52px;height:52px;border:1px solid var(--login-border);border-radius:50%;background:var(--login-card);color:var(--login-ink);font-size:23px;cursor:pointer}
+.login-security-note{display:flex;align-items:center;justify-content:center;gap:10px;color:var(--login-muted);font-size:12px;text-align:center;line-height:1.7}
+.login-security-note i{font-size:20px}
+.nawa-login-visual{position:relative;isolation:isolate;display:flex;flex-direction:column;justify-content:space-between;gap:40px;min-height:100vh;overflow:hidden;padding:34px 5.5% 30px;border-inline-start:1px solid #a9c8e8;background:#edf4fa;color:var(--login-ink)}
+.nawa-login-visual:before{content:"";position:absolute;z-index:-2;inset:0;background:url('static/images/login-servers-20260920.png') center/cover no-repeat;opacity:.8}
+.nawa-login-visual:after{content:"";position:absolute;z-index:-1;inset:0;width:auto;height:auto;border-radius:0;transform:none;background:linear-gradient(90deg,#f5faff05,#f5faffd9 54%,#f5fafffa),linear-gradient(0deg,#f5faffb8,transparent 28%,#f5faffa8);pointer-events:none}
+.nawa-login-visual>*{position:relative;z-index:1}
+.nawa-login-visual-top{display:flex;align-items:center;justify-content:space-between;gap:15px;flex-direction:row-reverse}
+.nawa-login-logo{width:130px;height:80px;object-fit:contain;filter:drop-shadow(0 4px 3px #0002)}
+.nawa-login-status{display:flex;gap:9px;align-items:center;color:var(--login-ink);background:#ffffffa6;border:1px solid #fce0e5;border-radius:24px;padding:12px 16px;font-size:12px;white-space:normal}
+.nawa-login-status i{color:#f32438}
+.nawa-login-visual h2{font-size:clamp(36px,4.25vw,70px);font-weight:800;line-height:1.45;margin:0 0 20px;letter-spacing:-1.8px;color:var(--login-ink)}
+.nawa-login-visual h2 .login-red{color:#f01922}
+.nawa-login-visual p{font-size:16px;line-height:1.95;color:var(--login-ink);margin:0 0 32px;max-width:580px}
+.nawa-login-visual>div:nth-child(2){margin-top:24px;width:min(100%,600px);align-self:flex-start}
+.login-features{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-top:26px}
+.login-feature{padding:22px 9px 18px;text-align:center;background:#ffffffb8;border:1px solid #e1e9f2;border-radius:20px;box-shadow:0 8px 25px #30577405;backdrop-filter:blur(10px)}
+.login-feature>i{display:block;font-size:32px;color:#f52332;margin-bottom:15px}
+.login-feature strong{display:block;font-size:12px;color:var(--login-ink);margin-bottom:9px}
+.login-feature span{display:block;font-size:11px;line-height:1.9;color:var(--login-muted)}
+.login-quote{position:relative;padding:24px 26px;margin:28px 0 0 0;max-width:500px;border:1px solid #f6cbd2;border-radius:18px;background:linear-gradient(110deg,#fff1f4d9,#ffffff9e);backdrop-filter:blur(14px)}
+.login-quote strong{display:block;font-size:17px;margin-bottom:8px;color:var(--login-ink)}
+.login-quote span{font-size:14px;color:var(--login-muted)}
+.login-quote>i{position:absolute;left:18px;top:18px;font-size:25px;color:#f32438}
+.nawa-login-visual>small{font-size:11px;color:var(--login-muted)}
+.nawa-login-page button:focus-visible,.nawa-login-page a:focus-visible{outline:3px solid #f55b6c;outline-offset:4px}
+.nawa-login-page.login-dark{--login-ink:#f3f6fa;--login-muted:#bbcadb;--login-border:#3c4c5f;--login-card:rgba(15,23,34,.72);--login-field:rgba(47,62,78,.40);background:#070d15;color-scheme:dark}
+.login-dark .nawa-login-panel{background:radial-gradient(ellipse at 100% 5%,#531b2b80,transparent 55%),radial-gradient(ellipse at 0 10%,#263e54b0,transparent 55%),#080f17}
+.login-dark .nawa-login-card{border-top-color:#925164;border-inline-start-color:#aa3449;background:radial-gradient(ellipse at 100% 0,#792b4d2b,transparent 55%),linear-gradient(135deg,#6f96aa25,#080f1599 42%,#51172335);box-shadow:0 25px 65px #0005}
+.login-dark .nawa-login-card .nawa-brand-mark{background:linear-gradient(135deg,#132331,#070b11);border-color:#547088}
+.login-dark .nawa-login-visual{background:#060c14;border-color:#20334a}
+.login-dark .nawa-login-visual:before{opacity:1}
+.login-dark .nawa-login-visual:after{background:linear-gradient(90deg,#050b1300,#050b1366 35%,#050b13ed 85%),linear-gradient(0deg,#030b1740,transparent 50%,#030b1730)}
+.login-dark .nawa-login-status{background:#08121b80;border-color:#ffffff15}
+.login-dark .login-feature{background:#08101975;border-color:#73819b40;box-shadow:none}
+.login-dark .login-quote{background:linear-gradient(120deg,#412b3baf,#35141d85);border-color:#8b263b}
+.login-dark .nawa-login-card .btn-primary{box-shadow:0 12px 25px #e7192820}
+@media(min-width:1600px){.nawa-login-panel{padding-top:120px}.nawa-login-card{padding:32px 40px}.nawa-login-visual>div:nth-child(2){margin-top:55px}}
+@media(max-width:1100px){.nawa-login-shell{grid-template-columns:48% 52%}.nawa-login-panel{padding-inline:6%}.nawa-login-card{padding:26px 22px}.nawa-login-visual{padding-inline:6%}.login-features{gap:7px;grid-template-columns:repeat(2,minmax(0,1fr))}.login-feature{padding:14px 8px}.login-feature>i{font-size:25px;margin-bottom:8px}.nawa-login-visual h2{font-size:43px}.nawa-login-visual p{font-size:14px}.nawa-login-status{font-size:10px;padding:9px}.nawa-login-logo{width:100px}}
+@media(max-width:760px){.nawa-login-shell{display:flex;flex-direction:column}.nawa-login-panel{min-height:100svh;padding:100px 20px 28px;gap:22px}.nawa-login-card{max-width:480px;padding:26px 24px;border-radius:23px}.nawa-login-card h1{font-size:28px}.nawa-login-card>p{font-size:14px}.login-appearance{top:22px;inset-inline-end:24px}.login-theme-toggle{width:44px;height:44px}.login-language{padding:10px 17px}.nawa-login-visual{min-height:650px;padding:30px 26px;gap:24px}.nawa-login-visual>div:nth-child(2){align-self:center;margin-top:0}.nawa-login-visual h2{font-size:42px}.login-features{grid-template-columns:repeat(4,minmax(0,1fr))}.login-feature strong{font-size:10px}.login-feature span{font-size:10px}.login-quote{margin-top:24px}.nawa-login-visual>small{text-align:center}}
+@media(max-width:400px){.login-features{grid-template-columns:repeat(2,minmax(0,1fr))}.nawa-login-panel{padding-inline:14px}.nawa-login-card{padding:24px 18px}}
+
+</style>
+<style>.nawa-login-card .nawa-brand{min-width:108px;flex-shrink:0}.nawa-login-card .nawa-brand-mark{flex:0 0 108px;min-width:108px;overflow:visible}.nawa-login-card .nawa-brand-mark img{max-width:88px;max-height:80px}</style>
+</head>
+
+<body class="nawa-login-page">
+    <div class="nawa-login-shell">
+        <section class="nawa-login-panel">
+            <div class="login-appearance"><button type="button" class="login-theme-toggle" aria-label="تفعيل المظهر الداكن" aria-pressed="false" title="تبديل المظهر"><i class="bi bi-sun" aria-hidden="true"></i></button><span class="login-language"><i class="bi bi-globe2" aria-hidden="true"></i> العربية</span></div>
+            <main class="nawa-login-card">
+                <a class="nawa-brand text-decoration-none" href="login.php" aria-label="3D Radius">
+                    <span class="nawa-brand-mark"><img src="static/images/3d-radius-logo.png" alt=""></span>
+                    <span class="nawa-brand-copy"><strong>3D Radius</strong><small>إدارة الشبكات بوضوح</small></span>
+                </a>
+
+                <h1>مرحباً بعودتك</h1><span class="visually-hidden"><?= t('text', 'LoginRequired') ?></span>
+                <p>أدخل بيانات مشغّل النظام للوصول إلى لوحة إدارة الشبكة.</p>
+
+                <form action="dologin.php" method="POST" autocomplete="on">
+                    <div class="mb-3">
+                        <label class="form-label" for="operator_user"><?= t('all', 'Username') ?></label>
+                        <input type="text" class="form-control" id="operator_user" name="operator_user"
+                               autocomplete="username" placeholder="أدخل اسم المستخدم" required autofocus><i class="bi bi-person login-field-icon" aria-hidden="true"></i>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label" for="operator_pass"><?= t('all', 'Password') ?></label>
+                        <input type="password" class="form-control" id="operator_pass" name="operator_pass"
+                               autocomplete="current-password" placeholder="أدخل كلمة المرور" required><i class="bi bi-lock login-field-icon" aria-hidden="true"></i><button class="login-password-toggle" type="button" aria-controls="operator_pass" aria-label="إظهار كلمة المرور" aria-pressed="false"><i class="bi bi-eye" aria-hidden="true"></i></button>
+                    </div>
+
+                    <div class="mb-4" hidden>
+                        <label class="form-label" for="location">الموقع</label>
+                        <select class="form-select" id="location" name="location" <?= $onlyDefaultLocation ? "disabled" : "" ?>>
+<?php
+                            $locationOptionFormat = '<option value="%s">%s</option>' . "\n";
+                            if ($onlyDefaultLocation) {
+                                printf($locationOptionFormat, "default", "default");
+                            } else {
+                                foreach (array_keys($configValues['CONFIG_LOCATIONS']) as $location) {
+                                    $safeLocation = htmlspecialchars($location, ENT_QUOTES, 'UTF-8');
+                                    printf($locationOptionFormat, $safeLocation, $safeLocation);
+                                }
+                            }
+?>
+                        </select>
+                    </div>
+
+                    <input name="csrf_token" type="hidden" value="<?= dalo_csrf_token() ?>">
+                    <button class="btn btn-primary w-100" type="submit">
+                        <span><?= t('text', 'LoginPlease') ?></span>
+                        <i class="bi bi-arrow-left" aria-hidden="true"></i>
+                    </button>
+                </form>
+
+                <small class="d-block mt-4 text-center text-muted">daloRADIUS 2.3 · 3D Radius</small>
+            </main>
+            <div class="login-security-note"><i class="bi bi-shield-check" aria-hidden="true"></i><span>3D Radius · لوحة إدارة الشبكة</span></div>
+        </section>
+
+        <aside class="nawa-login-visual" aria-label="منصة 3D Radius">
+            <div class="nawa-login-visual-top"><img class="nawa-login-logo" src="static/images/3d-radius-logo.png" alt="شعار 3D Radius"><span class="nawa-login-status"><i class="bi bi-shield-check"></i> اتصال آمن بلوحة المشغّلين</span></div>
+            <div>
+                <h2>شبكتك كلها،<br><span class="login-red">في مكان واحد.</span></h2>
+                <p>نظام 3D Radius لإدارة شبكتك باحترافية؛ تابع المشتركين والكروت ونقاط البيع، وراقب الاتصالات والإيرادات من لوحة تحكم واحدة.</p>
+            </div>
+            <small>© <?= date('Y') ?> 3D Radius لإدارة الشبكات</small>
+        </aside>
+    </div>
+
+<?php
+    if (isset($_SESSION['operator_login_error']) && $_SESSION['operator_login_error'] !== false) {
+        $message = t('messages', 'loginerror');
+        echo <<<EOF
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="error-toast" class="toast align-items-start text-bg-danger border-0" role="alert" aria-live="assertive" aria-atomic="true">
+            <div class="d-flex">
+                <div class="toast-body">{$message}</div>
+                <button type="button" class="btn-close btn-close-white m-2" data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>
+        </div>
+    </div>
+EOF;
+        unset($_SESSION['operator_login_error']);
+    }
+?>
+
+    <script src="static/js/bootstrap.bundle.min.js"></script>
+    <script>
+        var errorToast = document.getElementById('error-toast');
+        if (errorToast) {
+            bootstrap.Toast.getOrCreateInstance(errorToast).show();
+        }
+    </script>
+<script id="login-appearance-script">
+(function () {
+ 'use strict';
+ const body = document.body;
+ const theme = document.querySelector('.login-theme-toggle');
+ const icon = theme.querySelector('i');
+ function applyTheme(dark) {
+  body.classList.toggle('login-dark', dark);
+  theme.setAttribute('aria-pressed', String(dark));
+  theme.setAttribute('aria-label', dark ? 'تفعيل المظهر الفاتح' : 'تفعيل المظهر الداكن');
+  theme.title = theme.getAttribute('aria-label');
+  icon.className = dark ? 'bi bi-moon' : 'bi bi-sun';
+ }
+ applyTheme(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+ theme.addEventListener('click', function () { applyTheme(!body.classList.contains('login-dark')); });
+ const passwordToggle = document.querySelector('.login-password-toggle');
+ const password = document.getElementById('operator_pass');
+ passwordToggle.addEventListener('click', function () {
+  const show = password.type === 'password';
+  password.type = show ? 'text' : 'password';
+  passwordToggle.setAttribute('aria-pressed', String(show));
+  passwordToggle.setAttribute('aria-label', show ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور');
+  passwordToggle.querySelector('i').className = show ? 'bi bi-eye-slash' : 'bi bi-eye';
+ });
+})();
+</script>
+</body>
+</html>

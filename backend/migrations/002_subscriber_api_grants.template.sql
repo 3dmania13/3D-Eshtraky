@@ -8,16 +8,44 @@ GRANT SELECT ON radius.userinfo TO 'three_d_subscriber_api'@'172.17.0.1';
 GRANT SELECT ON radius.packages TO 'three_d_subscriber_api'@'172.17.0.1';
 GRANT SELECT ON radius.radcheck TO 'three_d_subscriber_api'@'172.17.0.1';
 GRANT SELECT ON radius.radusergroup TO 'three_d_subscriber_api'@'172.17.0.1';
+GRANT SELECT ON radius.radgroupreply TO 'three_d_subscriber_api'@'172.17.0.1';
+-- Live speed updates need only RADIUS routing fields, not router API credentials.
+GRANT SELECT (nasname,shortname,secret,enabled) ON radius.nas
+    TO 'three_d_subscriber_api'@'172.17.0.1';
 GRANT SELECT ON radius.radacct TO 'three_d_subscriber_api'@'172.17.0.1';
 GRANT SELECT ON radius.nawa_usage_daily TO 'three_d_subscriber_api'@'172.17.0.1';
 GRANT SELECT ON radius.three_d_net_recharge_transactions TO 'three_d_subscriber_api'@'172.17.0.1';
 GRANT SELECT ON radius.nawa_audit_log TO 'three_d_subscriber_api'@'172.17.0.1';
+-- Required only when subscriber self-service speed selection is enabled.
+GRANT SELECT,INSERT,UPDATE,DELETE ON radius.radreply
+    TO 'three_d_subscriber_api'@'172.17.0.1';
 
 GRANT SELECT,INSERT,UPDATE ON radius.subscriber_refresh_tokens
     TO 'three_d_subscriber_api'@'172.17.0.1';
 GRANT SELECT,INSERT,UPDATE ON radius.subscriber_devices
     TO 'three_d_subscriber_api'@'172.17.0.1';
 GRANT SELECT,INSERT,UPDATE ON radius.subscriber_notifications
+    TO 'three_d_subscriber_api'@'172.17.0.1';
+GRANT SELECT,INSERT,UPDATE ON radius.subscriber_push_tokens
+    TO 'three_d_subscriber_api'@'172.17.0.1';
+
+GRANT SELECT,INSERT,UPDATE,DELETE ON radius.subscriber_push_devices
+    TO 'three_d_subscriber_api'@'172.17.0.1';
+GRANT SELECT,INSERT,UPDATE,DELETE ON radius.subscriber_push_known_devices
+    TO 'three_d_subscriber_api'@'172.17.0.1';
+GRANT SELECT,INSERT,UPDATE,DELETE ON radius.subscriber_push_events
+    TO 'three_d_subscriber_api'@'172.17.0.1';
+GRANT SELECT,INSERT,UPDATE,DELETE ON radius.subscriber_push_outbox
+    TO 'three_d_subscriber_api'@'172.17.0.1';
+GRANT SELECT,INSERT,UPDATE,DELETE ON radius.subscriber_push_state
+    TO 'three_d_subscriber_api'@'172.17.0.1';
+GRANT SELECT,INSERT,UPDATE,DELETE ON radius.subscriber_quota_alert_state
+    TO 'three_d_subscriber_api'@'172.17.0.1';
+GRANT SELECT,INSERT,UPDATE,DELETE ON radius.subscriber_broadcasts
+    TO 'three_d_subscriber_api'@'172.17.0.1';
+GRANT SELECT,INSERT,UPDATE,DELETE ON radius.subscriber_broadcast_recipients
+    TO 'three_d_subscriber_api'@'172.17.0.1';
+GRANT SELECT,INSERT ON radius.subscriber_feedback
     TO 'three_d_subscriber_api'@'172.17.0.1';
 
 FLUSH PRIVILEGES;

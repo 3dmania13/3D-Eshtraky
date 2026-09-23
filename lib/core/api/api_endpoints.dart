@@ -10,7 +10,13 @@ abstract final class ApiEndpoints {
   static const sessions = '/api/v1/subscriber/sessions';
   static const devices = '/api/v1/subscriber/devices';
   static String device(String id) => '$devices/$id';
+  static String deviceSpeed(String id) => '${device(id)}/speed';
   static const recharges = '/api/v1/subscriber/recharges';
   static const notifications = '/api/v1/subscriber/notifications';
+  static const notificationsReadAll = '$notifications/read-all';
+  static const pushToken = '$notifications/push-token';
+  static const speed = '/api/v1/subscriber/speed';
+  static const connectionLimit = '/api/v1/subscriber/connection-limit';
+  static const feedback = '/api/v1/subscriber/feedback';
   static String notificationRead(String id) => '$notifications/$id/read';
 }

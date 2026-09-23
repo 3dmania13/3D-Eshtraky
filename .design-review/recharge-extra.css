@@ -1,0 +1,21 @@
+.recharge-reference .nawa-page-header{position:relative;isolation:isolate;overflow:hidden;min-height:135px;padding:25px 24px;border:1px solid var(--u-line);border-radius:16px;background:radial-gradient(ellipse at 0 10%,#ffb3c466,transparent 55%),linear-gradient(110deg,#fff1f5,#f1f6ff 65%,#fff);margin-bottom:14px}
+.recharge-reference .nawa-page-header>div:first-child{padding-inline-start:62px;max-width:72%;position:relative;z-index:1}
+.recharge-reference .nawa-page-header h1{font-size:28px}.recharge-reference .nawa-page-header p{line-height:1.8}
+.recharge-reference .recharge-heading-icon{position:absolute;right:0;top:5px;display:grid;place-items:center;width:49px;height:49px;border-radius:13px;background:#fff3f6;border:1px solid #ff8da5;color:#ff164a;font-size:29px;box-shadow:0 5px 18px #ef174b12}
+.recharge-reference .recharge-art{position:absolute;left:75px;top:18px;width:210px;height:120px;transform:rotate(-14deg);pointer-events:none}
+.recharge-reference .recharge-art span{position:absolute;inset:12px 0 0;display:grid;place-items:center;border:1px solid #ff7591;border-radius:12px;background:linear-gradient(130deg,#ff3c5a,#c90a30 60%,#540d28);box-shadow:0 10px 22px #75143135;color:white;font-size:20px;font-weight:800;letter-spacing:1px;direction:ltr}
+.recharge-reference .recharge-art span:first-child{transform:translate(-40px,-9px) rotate(-8deg);background:linear-gradient(130deg,#233048,#650f28)}.recharge-reference .recharge-art span:nth-child(2){transform:translate(-20px,-4px) rotate(-3deg);background:linear-gradient(130deg,#0b1c2c,#a72042)}
+.recharge-reference .nawa-stat{min-height:116px;--stat-color:#0085ff;--stat-tint:#deefff}.recharge-reference .nawa-stat:nth-child(2){--stat-color:#ff264f;--stat-tint:#ffe6ef}.recharge-reference .nawa-stat:nth-child(3){--stat-color:#00bd86;--stat-tint:#dffff1}.recharge-reference .nawa-stat:nth-child(4){--stat-color:#9251ff;--stat-tint:#f0e5ff}
+.recharge-reference .nawa-stat strong{font-size:24px;white-space:normal;overflow-wrap:anywhere}.recharge-reference .nawa-stat:after{inset:72% 0 0}
+.recharge-reference .nawa-filter{display:flex;align-items:center;gap:10px;padding:4px 16px 15px;flex-wrap:wrap;background:transparent;border:0}
+.recharge-reference .nawa-card-page-size{background:var(--u-soft);border:1px solid var(--u-line);border-radius:9px;padding:5px 9px;color:var(--u-muted)}
+.recharge-reference .nawa-card-page-size input{background:var(--u-field);color:var(--u-ink);border-color:var(--u-line);height:32px}
+.recharge-reference .nawa-table td:last-child{white-space:nowrap}.recharge-reference .nawa-table td:last-child>.nawa-button,.recharge-reference .nawa-table td:last-child form{display:inline-flex;margin:2px}
+.recharge-reference .nawa-table .nawa-button.small{min-height:29px;padding:6px 9px;font-size:10px;border-radius:8px}
+.recharge-reference .nawa-table .nawa-button.success{color:#078bf2!important;background:color-mix(in srgb,#0585ff 8%,var(--u-field))!important;border-color:#167ecc44!important}
+.recharge-reference .nawa-table .nawa-button.danger{color:#ff3058!important;border-color:#ff47643d!important;background:color-mix(in srgb,#ff174a 6%,var(--u-field))!important}
+.recharge-reference .nawa-card-header{padding:18px 17px 10px}.recharge-reference .nawa-card-header h2{font-size:21px}
+body.dark .recharge-reference .nawa-page-header,html[data-theme="dark"] .recharge-reference .nawa-page-header{background:radial-gradient(ellipse at 0 0,#1e439766,transparent 60%),linear-gradient(110deg,#0b1c32,#111e32 65%,#301626);border-color:#59344f}
+body.dark .recharge-reference .recharge-heading-icon{background:#5c092c80;border-color:#a0244b;color:#ff4c74}
+@media(max-width:1000px){.recharge-reference .nawa-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.recharge-reference .recharge-art{width:155px;left:40px}.recharge-reference .nawa-page-header h1{font-size:24px}}
+@media(max-width:600px){.recharge-reference .nawa-page-header{padding:20px 16px}.recharge-reference .nawa-page-header>div:first-child{max-width:100%;padding-inline-start:52px}.recharge-reference .recharge-heading-icon{width:40px;height:43px;font-size:24px}.recharge-reference .recharge-art{opacity:.12;left:5px}.recharge-reference .nawa-stat strong{font-size:20px}.recharge-reference .nawa-filter .nawa-search-field{flex-basis:100%}}

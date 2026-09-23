@@ -1,0 +1,31 @@
+from pathlib import Path
+import re, hashlib
+p = Path('D:/eshtraky/.design-review')
+old = (p/'login-ar-original.php').read_bytes()
+s = old.decode('utf-8')
+s = s.replace('<h1>?????? ??????</h1>', '<h1>مرحباً بعودتك</h1>')
+s = s.replace('> ???????</span>', '> العربية</span>')
+s = s.replace('placeholder="???? ??? ????????"', 'placeholder="أدخل اسم المستخدم"')
+s = s.replace('placeholder="???? ???? ??????"', 'placeholder="أدخل كلمة المرور"')
+s = s.replace('aria-label="????? ?????? ??????"', 'aria-label="تفعيل المظهر الداكن"')
+s = s.replace('title="????? ??????"', 'title="تبديل المظهر"')
+s = s.replace('aria-label="????? ???? ??????"', 'aria-label="إظهار كلمة المرور"')
+s = s.replace("dark ? '????? ?????? ??????' : '????? ?????? ??????'", "dark ? 'تفعيل المظهر الفاتح' : 'تفعيل المظهر الداكن'")
+s = s.replace("show ? '????? ???? ??????' : '????? ???? ??????'", "show ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'")
+s = s.replace('3D Radius ? ???? ????? ??????', '3D Radius · لوحة إدارة الشبكة')
+s = s.replace('إدارة المستخدمين ونقاط الاتصال والجلسات والتقارير من واجهة واحدة مبنية فوق daloRADIUS وFreeRADIUS.', 'نظام 3D Radius لإدارة شبكتك باحترافية؛ تابع المشتركين والكروت ونقاط البيع، وراقب الاتصالات والإيرادات من لوحة تحكم واحدة.')
+s = s.replace('في مكان واحد.</h2>', '<span class="login-red">في مكان واحد.</span></h2>')
+s = s.replace('<label class="form-label" for="location">Location</label>', '<label class="form-label" for="location">الموقع</label>')
+# Prevent inherited brand sizing from squeezing the logo into a narrow oval.
+s = s.replace('</head>', '<style>.nawa-login-card .nawa-brand{min-width:108px;flex-shrink:0}.nawa-login-card .nawa-brand-mark{flex:0 0 108px;min-width:108px;overflow:visible}.nawa-login-card .nawa-brand-mark img{max-width:88px;max-height:80px}</style>\n</head>')
+assert '???' not in s
+new = s.encode('utf-8')
+assert re.findall(rb'<\?(?:php|=).*?\?>', old, re.S) == re.findall(rb'<\?(?:php|=).*?\?>', new, re.S)
+(p/'login-ar-updated.php').write_bytes(new)
+deploy = (p/'deploy-login.py').read_text(encoding='utf-8')
+deploy = re.sub(r"assert hashlib.sha256\(old\).hexdigest\(\)==[\"'][a-f0-9]+[\"']", 'assert hashlib.sha256(old).hexdigest()=='+repr(hashlib.sha256(old).hexdigest()), deploy)
+deploy = deploy.replace('/home/anwar/login-design-stage.php','/home/anwar/login-ar-stage.php').replace('login-design-', 'login-ar-')
+a = deploy.index('asset=Path('); b = deploy.index('st=live.stat()', a)
+deploy = deploy[:a] + deploy[b:]
+(p/'deploy-login-ar.py').write_text(deploy, encoding='utf-8')
+print('UTF-8 verified; no question-mark corruption; all PHP blocks unchanged.')

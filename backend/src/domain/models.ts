@@ -66,6 +66,7 @@ export interface SessionRecord {
 export interface DeviceRecord {
   readonly id: string;
   readonly friendlyName: string | null;
+  readonly speedSelection: string | null;
   readonly callingStationId: string;
   readonly ipAddress: string;
   readonly connectionStartedAt: Date;
@@ -93,6 +94,8 @@ export interface NotificationRecord {
   readonly type: string;
   readonly title: string;
   readonly body: string;
+  readonly linkTitle: string | null;
+  readonly linkUrl: string | null;
   readonly createdAt: Date;
   readonly isRead: boolean;
 }

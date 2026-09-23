@@ -9,12 +9,19 @@ import '../../../core/widgets/async_content.dart';
 import '../../../core/widgets/main_scaffold.dart';
 import '../domain/subscriber_device.dart';
 
+/// Keeps the selected device speed visible immediately while the fresh device
+/// list is loading from the server. The server remains the persisted source
+/// after the next app launch.
+final _deviceSpeedDisplayOverridesProvider =
+    StateProvider.autoDispose<Map<String, String?>>((ref) => const {});
+
 class DevicesScreen extends ConsumerWidget {
   const DevicesScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final value = ref.watch(devicesProvider);
+    final speedOverrides = ref.watch(_deviceSpeedDisplayOverridesProvider);
     return MainScaffold(
       title: AppStrings.myDevices,
       currentIndex: 2,
@@ -23,8 +30,21 @@ class DevicesScreen extends ConsumerWidget {
           value: value,
           onRetry: () => ref.invalidate(devicesProvider),
           data: (devices) {
-            final active = devices.where((item) => item.isOnline).toList();
-            final previous = devices.where((item) => !item.isOnline).toList();
+            final displayedDevices = devices
+                .map((device) {
+                  if (!speedOverrides.containsKey(device.id)) return device;
+                  final selection = speedOverrides[device.id];
+                  return selection == null
+                      ? device.copyWith(clearSpeedSelection: true)
+                      : device.copyWith(speedSelection: selection);
+                })
+                .toList(growable: false);
+            final active = displayedDevices
+                .where((item) => item.isOnline)
+                .toList();
+            final previous = displayedDevices
+                .where((item) => !item.isOnline)
+                .toList();
             return RefreshIndicator(
               onRefresh: () => ref.refresh(devicesProvider.future),
               child: ListView(
@@ -46,6 +66,8 @@ class DevicesScreen extends ConsumerWidget {
                         child: _DeviceCard(
                           device: device,
                           onRename: () => _rename(context, ref, device),
+                          onSetSpeed: () => _setSpeed(context, ref, device),
+                          onDisconnect: () => _disconnect(context, ref, device),
                         ),
                       ),
                     ),
@@ -58,6 +80,8 @@ class DevicesScreen extends ConsumerWidget {
                       child: _DeviceCard(
                         device: device,
                         onRename: () => _rename(context, ref, device),
+                        onSetSpeed: () => _setSpeed(context, ref, device),
+                        onDisconnect: null,
                       ),
                     ),
                   ),
@@ -104,6 +128,120 @@ class DevicesScreen extends ConsumerWidget {
     if (name == null || name.trim().isEmpty) return;
     await ref.read(deviceRepositoryProvider).renameDevice(device.id, name);
     ref.invalidate(devicesProvider);
+  }
+
+  Future<void> _disconnect(
+    BuildContext context,
+    WidgetRef ref,
+    SubscriberDevice device,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text(AppStrings.disconnectDevice),
+        content: Text(
+          '${AppStrings.disconnectDeviceConfirm}\n\n${device.friendlyName}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text(AppStrings.cancel),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text(AppStrings.disconnect),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    try {
+      await ref.read(deviceRepositoryProvider).disconnectDevice(device.id);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text(AppStrings.deviceDisconnected)),
+      );
+      await Future<void>.delayed(const Duration(seconds: 1));
+      ref.invalidate(devicesProvider);
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.toString())));
+    }
+  }
+
+  Future<void> _setSpeed(
+    BuildContext context,
+    WidgetRef ref,
+    SubscriberDevice device,
+  ) async {
+    const choices = <String, String>{
+      'default': 'سرعة الباقة',
+      '512K': '512 كيلوبت',
+      '1M': '1 ميجابت',
+      '2M': '2 ميجابت',
+      '3M': '3 ميجابت',
+      '4M': '4 ميجابت',
+      '5M': '5 ميجابت',
+    };
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: Text('سرعة ${device.friendlyName}'),
+        children: choices.entries
+            .map(
+              (choice) => SimpleDialogOption(
+                onPressed: () => Navigator.pop(dialogContext, choice.key),
+                child: Row(
+                  children: [
+                    Icon(
+                      (device.speedSelection ?? 'default') == choice.key
+                          ? Icons.radio_button_checked_rounded
+                          : Icons.radio_button_off_rounded,
+                      color: Theme.of(dialogContext).colorScheme.primary,
+                    ),
+                    const SizedBox(width: 12),
+                    Text(choice.value),
+                  ],
+                ),
+              ),
+            )
+            .toList(growable: false),
+      ),
+    );
+    if (selected == null || !context.mounted) return;
+    try {
+      final result = await ref
+          .read(deviceRepositoryProvider)
+          .setDeviceSpeed(device.id, selected);
+      if (!context.mounted) return;
+      final selection = result.selection == 'default' ? null : result.selection;
+      ref
+          .read(_deviceSpeedDisplayOverridesProvider.notifier)
+          .update(
+            (current) => <String, String?>{...current, device.id: selection},
+          );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            result.appliedImmediately
+                ? 'تم تطبيق سرعة الجهاز الآن.'
+                : 'تم حفظ السرعة وستطبق عند اتصال الجهاز.',
+          ),
+        ),
+      );
+      ref.invalidate(devicesProvider);
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.toString())));
+    }
   }
 }
 
@@ -154,10 +292,17 @@ class _DeviceCountCard extends StatelessWidget {
 }
 
 class _DeviceCard extends StatelessWidget {
-  const _DeviceCard({required this.device, required this.onRename});
+  const _DeviceCard({
+    required this.device,
+    required this.onRename,
+    required this.onSetSpeed,
+    required this.onDisconnect,
+  });
 
   final SubscriberDevice device;
   final VoidCallback onRename;
+  final VoidCallback onSetSpeed;
+  final VoidCallback? onDisconnect;
 
   @override
   Widget build(BuildContext context) {
@@ -189,9 +334,7 @@ class _DeviceCard extends StatelessWidget {
                         style: const TextStyle(fontWeight: FontWeight.w900),
                       ),
                       Text(
-                        device.isOnline
-                            ? AppStrings.online
-                            : AppStrings.offline,
+                        '${_deviceKind(device.friendlyName)} • ${device.isOnline ? AppStrings.online : AppStrings.offline}',
                         style: TextStyle(
                           color: device.isOnline
                               ? Colors.green.shade700
@@ -207,11 +350,27 @@ class _DeviceCard extends StatelessWidget {
                   onPressed: onRename,
                   icon: const Icon(Icons.edit_outlined),
                 ),
+                IconButton(
+                  tooltip: 'تحديد السرعة',
+                  onPressed: onSetSpeed,
+                  icon: const Icon(Icons.speed_rounded),
+                ),
+                if (onDisconnect != null)
+                  IconButton(
+                    tooltip: AppStrings.disconnectDevice,
+                    color: Theme.of(context).colorScheme.error,
+                    onPressed: onDisconnect,
+                    icon: const Icon(Icons.delete_outline_rounded),
+                  ),
               ],
             ),
             const Divider(height: 24),
             _InfoRow(label: 'MAC', value: device.macAddress),
             _InfoRow(label: 'IP', value: device.ipAddress),
+            _InfoRow(
+              label: 'السرعة',
+              value: _speedLabel(device.speedSelection),
+            ),
             if (device.isOnline) ...[
               _InfoRow(
                 label: AppStrings.connectionStarted,
@@ -237,10 +396,60 @@ class _DeviceCard extends StatelessWidget {
   }
 
   IconData _deviceIcon(String name) {
-    if (name.contains('تلفزيون')) return Icons.tv_rounded;
-    if (name.contains('لابتوب')) return Icons.laptop_rounded;
+    final normalized = name.toLowerCase();
+    if (normalized.contains('تلفزيون') || normalized.contains('tv')) {
+      return Icons.tv_rounded;
+    }
+    if (normalized.contains('لابتوب') ||
+        normalized.contains('لابتوب') ||
+        normalized.contains('laptop') ||
+        normalized.contains('notebook') ||
+        normalized.startsWith('lt-')) {
+      return Icons.laptop_rounded;
+    }
+    if (_isPhone(normalized)) return Icons.smartphone_rounded;
     return Icons.smartphone_rounded;
   }
+
+  String _deviceKind(String name) {
+    final normalized = name.toLowerCase();
+    if (normalized.contains('تلفزيون') || normalized.contains('tv')) {
+      return 'تلفزيون';
+    }
+    if (normalized.contains('لابتوب') ||
+        normalized.contains('لابتوب') ||
+        normalized.contains('laptop') ||
+        normalized.contains('notebook') ||
+        normalized.startsWith('lt-')) {
+      return 'لابتوب';
+    }
+    return _isPhone(normalized) ? 'هاتف' : 'جهاز';
+  }
+
+  bool _isPhone(String name) =>
+      name.contains('redmi') ||
+      name.contains('xiaomi') ||
+      name.startsWith('mi-') ||
+      name.startsWith('mi ') ||
+      name.contains('iphone') ||
+      name.contains('samsung') ||
+      name.contains('galaxy') ||
+      name.contains('huawei') ||
+      name.contains('honor') ||
+      name.contains('oppo') ||
+      name.contains('vivo') ||
+      name.contains('infinix') ||
+      name.contains('itel');
+
+  String _speedLabel(String? selection) => switch (selection) {
+    '512K' => '512 كيلوبت',
+    '1M' => '1 ميجابت',
+    '2M' => '2 ميجابت',
+    '3M' => '3 ميجابت',
+    '4M' => '4 ميجابت',
+    '5M' => '5 ميجابت',
+    _ => 'سرعة الباقة',
+  };
 }
 
 class _InfoRow extends StatelessWidget {

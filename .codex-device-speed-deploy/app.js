@@ -1,0 +1,104 @@
+import helmet from "@fastify/helmet";
+import jwt from "@fastify/jwt";
+import rateLimit from "@fastify/rate-limit";
+import Fastify, {} from "fastify";
+import { AuthService } from "./auth/auth-service.js";
+import { createPool } from "./database/pool.js";
+import { MySqlSubscriberRepository } from "./database/mysql-subscriber-repository.js";
+import { DeviceService } from "./devices/device-service.js";
+import { MySqlLiveDeviceDisconnector } from "./devices/live-device-disconnect-service.js";
+import { DeviceSpeedService } from "./devices/device-speed-service.js";
+import { MySqlLiveDeviceSpeedApplier } from "./devices/live-device-speed-service.js";
+import { AppError, toPublicError } from "./errors.js";
+import { registerRoutes } from "./modules/routes.js";
+import { NotificationService } from "./notifications/notification-service.js";
+import { registerPushRoutes } from "./notifications/push-routes.js";
+import { registerFeedbackRoutes } from "./feedback/feedback-routes.js";
+import { RechargeService } from "./recharges/recharge-service.js";
+import { QuotaService } from "./services/quota-service.js";
+import { SubscriptionService } from "./services/subscription-service.js";
+import { SessionService } from "./sessions/session-service.js";
+import { SubscriberService } from "./subscriber/subscriber-service.js";
+import { SpeedService } from "./speed/speed-service.js";
+import { MySqlLiveSpeedApplier } from "./speed/live-speed-service.js";
+import { UsageService } from "./usage/usage-service.js";
+export async function createApp(config, overrides = {}) {
+    const app = Fastify({
+        trustProxy: config.trustProxy,
+        bodyLimit: 32 * 1024,
+        logger: {
+            level: config.logLevel,
+            redact: {
+                paths: [
+                    "req.headers.authorization",
+                    "req.body.password",
+                    "req.body.code",
+                    "req.body.refreshToken",
+                    "res.headers.authorization",
+                ],
+                censor: "[REDACTED]",
+            },
+        },
+    });
+    await app.register(helmet, { global: true });
+    await app.register(rateLimit, { global: false });
+    await app.register(jwt, { secret: config.auth.jwtSecret });
+    let ownedPool;
+    let services = overrides.services;
+    if (!services) {
+        ownedPool = overrides.pool ?? createPool(config.database);
+        const repository = new MySqlSubscriberRepository(ownedPool);
+        const subscriptions = new SubscriptionService();
+        const quota = new QuotaService();
+        const signer = {
+            sign: (principal) => app.jwt.sign({
+                sub: principal.username,
+                username: principal.username,
+                role: "subscriber",
+                status: principal.status,
+            }, { expiresIn: config.auth.accessTokenTtl }),
+        };
+        services = {
+            auth: new AuthService(repository, subscriptions, signer, config.auth.refreshTokenDays),
+            subscriber: new SubscriberService(repository, subscriptions, quota),
+            usage: new UsageService(repository, config.localTimezone),
+            sessions: new SessionService(repository),
+            devices: new DeviceService(repository, new MySqlLiveDeviceDisconnector(ownedPool)),
+            deviceSpeeds: new DeviceSpeedService(repository, new MySqlLiveDeviceSpeedApplier(ownedPool)),
+            recharges: new RechargeService(repository),
+            notifications: new NotificationService(repository, subscriptions, quota),
+            speed: new SpeedService(repository, new MySqlLiveSpeedApplier(ownedPool)),
+        };
+    }
+    if (ownedPool && !overrides.pool) {
+        app.addHook("onClose", async () => ownedPool?.end());
+    }
+    app.setNotFoundHandler(async (_request, reply) => reply
+        .code(404)
+        .send({ error: { code: "NOT_FOUND", message: "المسار غير موجود." } }));
+    app.setErrorHandler(async (error, request, reply) => {
+        const validation = typeof error === "object" &&
+            error !== null &&
+            "validation" in error &&
+            Boolean(error.validation);
+        const publicError = validation
+            ? new AppError(400, "VALIDATION_ERROR", "بيانات الطلب غير صالحة.")
+            : toPublicError(error);
+        if (publicError.statusCode >= 500)
+            request.log.error({ err: error }, "request failed");
+        return reply.code(publicError.statusCode).send({
+            error: {
+                code: publicError.code,
+                message: publicError.message,
+                ...(publicError.details ? { details: publicError.details } : {}),
+            },
+        });
+    });
+    registerRoutes(app, services);
+    if (ownedPool) {
+        registerPushRoutes(app, ownedPool);
+        registerFeedbackRoutes(app, ownedPool);
+    }
+    return app;
+}
+//# sourceMappingURL=app.js.map

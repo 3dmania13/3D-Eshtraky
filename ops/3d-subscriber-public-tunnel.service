@@ -1,0 +1,20 @@
+[Unit]
+Description=3D Subscriber temporary HTTPS tunnel
+Wants=network-online.target 3d-subscriber-speed-api.service
+After=network-online.target 3d-subscriber-speed-api.service
+
+[Service]
+DynamicUser=yes
+ExecStart=/opt/3dnet-public-preview/cloudflared tunnel --no-autoupdate --protocol http2 --metrics 127.0.0.1:0 --url http://192.168.230.111:3085
+Restart=always
+RestartSec=15
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

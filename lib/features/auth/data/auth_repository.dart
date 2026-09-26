@@ -12,7 +12,7 @@ class AuthSession {
 }
 
 abstract interface class AuthRepository {
-  Future<AuthSession> login({required String code});
+  Future<AuthSession> login({required String code, bool broadband = false});
   Future<Subscriber> restoreSubscriber();
   Future<void> logout(String refreshToken);
 }
@@ -23,10 +23,13 @@ class ApiAuthRepository implements AuthRepository {
   final ApiClient _client;
 
   @override
-  Future<AuthSession> login({required String code}) async {
+  Future<AuthSession> login({
+    required String code,
+    bool broadband = false,
+  }) async {
     final json = await _client.postJson(
-      ApiEndpoints.codeLogin,
-      data: {'code': code.trim()},
+      broadband ? '/api/v1/auth/broadband-login' : ApiEndpoints.codeLogin,
+      data: {broadband ? 'username' : 'code': code.trim()},
     );
     final accessToken = json['accessToken'];
     final refreshToken = json['refreshToken'];
@@ -42,7 +45,9 @@ class ApiAuthRepository implements AuthRepository {
   @override
   Future<void> logout(String refreshToken) async {
     await _client.postJson(
-      ApiEndpoints.logout,
+      refreshToken.startsWith('bb_')
+          ? '/api/v1/auth/broadband-logout'
+          : ApiEndpoints.logout,
       data: {'refreshToken': refreshToken},
     );
   }
@@ -57,7 +62,10 @@ class MockAuthRepository implements AuthRepository {
   const MockAuthRepository();
 
   @override
-  Future<AuthSession> login({required String code}) async {
+  Future<AuthSession> login({
+    required String code,
+    bool broadband = false,
+  }) async {
     await Future<void>.delayed(const Duration(milliseconds: 850));
     if (code.trim() != 'demo001') {
       throw const AppException('الرمز غير صحيح.', code: 'invalid_credentials');

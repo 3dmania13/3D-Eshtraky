@@ -18,6 +18,7 @@ import type { AppServices } from "./modules/services.js";
 import { NotificationService } from "./notifications/notification-service.js";
 import { registerPushRoutes } from "./notifications/push-routes.js";
 import { registerFeedbackRoutes } from "./feedback/feedback-routes.js";
+import { registerBroadbandRoutes } from "./broadband/broadband-routes.js";
 import { RechargeService } from "./recharges/recharge-service.js";
 import { QuotaService } from "./services/quota-service.js";
 import { SubscriptionService } from "./services/subscription-service.js";
@@ -134,6 +135,7 @@ export async function createApp(
 
   registerRoutes(app, services);
   if (ownedPool) {
+    registerBroadbandRoutes(app, ownedPool, config.localTimezone);
     registerPushRoutes(app, ownedPool);
     registerFeedbackRoutes(app, ownedPool);
   }

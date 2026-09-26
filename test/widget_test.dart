@@ -25,6 +25,7 @@ void main() {
     expect(find.text('الرمز'), findsOneWidget);
     expect(find.text('تسجيل الدخول'), findsOneWidget);
     expect(find.text('تسجيل الدخول للشبكة'), findsOneWidget);
+    expect(find.text('تسجيل دخول أصحاب البرودباند'), findsOneWidget);
     expect(find.textContaining('demo001'), findsNothing);
     expect(find.text('كلمة المرور'), findsNothing);
 
@@ -34,5 +35,17 @@ void main() {
       Theme.of(tester.element(find.text('أهلًا بك'))).brightness,
       Brightness.dark,
     );
+
+    await tester.ensureVisible(find.byKey(const Key('broadband-login-button')));
+    await tester.tap(find.byKey(const Key('broadband-login-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('دخول البرودباند'), findsOneWidget);
+    expect(find.text('كلمة المرور'), findsNothing);
+    await tester.tap(find.text('دخول'));
+    await tester.pumpAndSettle();
+    expect(find.text('أدخل اسم المستخدم.'), findsOneWidget);
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    expect(find.text('الرمز'), findsOneWidget);
   });
 }

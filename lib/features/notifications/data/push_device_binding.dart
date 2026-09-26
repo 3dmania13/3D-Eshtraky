@@ -9,6 +9,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../../../core/api/api_endpoints.dart';
 import '../../../core/auth/token_storage.dart';
+import '../../../core/auth/account_access.dart';
 import '../../../core/config/app_config.dart';
 import 'notification_preferences.dart';
 import 'push_notification_service.dart';
@@ -90,7 +91,7 @@ class PushDeviceBinding with WidgetsBindingObserver {
         final installation = await _installation();
         if (generation != _generation) return;
         await _dio.post<Object?>(
-          ApiEndpoints.pushToken,
+          accountApiPath(ApiEndpoints.pushToken, access),
           data: {
             'token': token,
             'platform': 'android',
@@ -128,7 +129,7 @@ class PushDeviceBinding with WidgetsBindingObserver {
         final installation = await _installation();
         if (access != null) {
           await _dio.post<Object?>(
-            '${ApiEndpoints.pushToken}/revoke',
+            accountApiPath('${ApiEndpoints.pushToken}/revoke', access),
             data: {'installation_id': installation},
             options: Options(headers: {'Authorization': 'Bearer $access'}),
           );

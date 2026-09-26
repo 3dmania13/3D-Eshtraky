@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Pool, PoolConnection, RowDataPacket } from "mysql2/promise";
 import { PushSendError, type PushSender } from "./fcm-sender.js";
 import { enqueueNotification } from "./push-store.js";
+import { radiusDeviceIdentitySql } from "../devices/radius-device-identity.js";
 
 const oneGib = 1024n ** 3n;
 const quotaScanCursor = "quota_scan_cursor";
@@ -79,8 +80,8 @@ export class PushWorker {
     const cursor = String(cursorRows[0]?.value ?? "");
     const [rows] = await c.query<RowDataPacket[]>(
       `SELECT app_users.username,
-              GREATEST(COALESCE(ui.total_quota,0),COALESCE(ui.byte_limit,0),COALESCE(ui.total_limit,0)) AS total_bytes,
-              COALESCE(ui.used_quota,0) AS used_bytes
+              COALESCE(bb.total_quota,GREATEST(COALESCE(ui.total_quota,0),COALESCE(ui.byte_limit,0),COALESCE(ui.total_limit,0))) AS total_bytes,
+              COALESCE(bb.used_quota,ui.used_quota,0) AS used_bytes
          FROM (
            SELECT username
              FROM subscriber_push_devices USE INDEX (user_active)
@@ -90,9 +91,12 @@ export class PushWorker {
             ORDER BY username
             LIMIT ${quotaBatchSize}
          ) AS app_users
-         JOIN userinfo ui
+         LEFT JOIN userinfo ui
            ON ui.username=CONVERT(app_users.username USING utf8mb4) COLLATE utf8mb4_general_ci
-        WHERE COALESCE(ui.is_disabled,0)=0 AND COALESCE(ui.status,'active')='active'
+         LEFT JOIN nawa_pppoe_users bb
+           ON bb.username=CONVERT(app_users.username USING utf8mb4) COLLATE utf8mb4_unicode_ci
+        WHERE (bb.username IS NOT NULL AND bb.status='active')
+           OR (bb.username IS NULL AND ui.username IS NOT NULL AND COALESCE(ui.is_disabled,0)=0 AND COALESCE(ui.status,'active')='active')
         ORDER BY app_users.username`,
       [cursor],
     );
@@ -215,6 +219,7 @@ export class PushWorker {
     const [rows] = await c.query<
       RowDataPacket[]
     >(`SELECT ra.username,ra.callingstationid,
+        ${radiusDeviceIdentitySql} AS device_identity,
         COALESCE((SELECT NULLIF(cd.device_name,'') FROM communication_devices cd
           WHERE BINARY cd.mac_address=BINARY ra.callingstationid AND NULLIF(cd.device_name,'') IS NOT NULL
           ORDER BY cd.last_seen DESC,cd.id DESC LIMIT 1),'') AS device_name
@@ -227,6 +232,8 @@ export class PushWorker {
         AND NULLIF(ra.callingstationid,'') IS NOT NULL
         AND ra.acctstarttime>=UTC_TIMESTAMP()-INTERVAL 5 MINUTE
         AND COALESCE(ra.acctupdatetime,ra.acctstarttime)>=UTC_TIMESTAMP()-INTERVAL 5 MINUTE
+        AND NOT EXISTS (SELECT 1 FROM subscriber_push_events e
+          WHERE e.event_key=CONVERT(CONCAT('radius-device:',SHA2(CONCAT(ra.username,CHAR(0),${radiusDeviceIdentitySql}),256)) USING ascii) COLLATE ascii_bin)
       GROUP BY ra.username,ra.callingstationid
       ORDER BY MAX(ra.acctstarttime) LIMIT 50`);
     for (const row of rows) {
@@ -236,7 +243,7 @@ export class PushWorker {
       const key = `radius-device:${createHash("sha256")
         .update(username)
         .update("\0")
-        .update(mac)
+        .update(String(row.device_identity))
         .digest("hex")}`;
       await c.beginTransaction();
       try {
@@ -325,8 +332,9 @@ export class PushWorker {
       RowDataPacket[]
     >(`SELECT a.id,a.subject_id AS username
       FROM nawa_audit_log a WHERE a.id >= CAST((SELECT value FROM subscriber_push_state WHERE name='audit_floor') AS UNSIGNED)
-      AND a.subject_type='user' AND CHAR_LENGTH(a.subject_id) BETWEEN 1 AND 64
-      AND a.action_name IN ('card.recharge','user.package_settle','user.settle')
+      AND CHAR_LENGTH(a.subject_id) BETWEEN 1 AND 64
+      AND ((a.subject_type='user' AND a.action_name IN ('card.recharge','user.package_settle','user.settle'))
+        OR (a.subject_type='pppoe_user' AND a.action_name='pppoe.user.recharge'))
       AND NOT EXISTS (SELECT 1 FROM subscriber_push_events e WHERE e.event_key=CONCAT('recharge:audit:',a.id))
       ORDER BY a.id LIMIT 100`);
     const [dealer] = await c.query<

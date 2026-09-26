@@ -6,6 +6,7 @@ import '../../features/account/presentation/account_screen.dart';
 import '../../features/admins/presentation/admins_screen.dart';
 import '../../features/auth/application/auth_controller.dart';
 import '../../features/auth/presentation/login_screen.dart';
+import '../../features/auth/presentation/broadband_login_screen.dart';
 import '../../features/dashboard/presentation/dashboard_screen.dart';
 import '../../features/devices/presentation/devices_screen.dart';
 import '../../features/file_transfer/presentation/file_transfer_placeholder_screen.dart';
@@ -18,20 +19,23 @@ import '../widgets/exit_confirmation_scope.dart';
 final rootNavigatorKey = GlobalKey<NavigatorState>();
 
 final appRouterProvider = Provider<GoRouter>((ref) {
-  final authStatus = ref.watch(
-    authControllerProvider.select((state) => state.status),
-  );
+  final refresh = ValueNotifier<int>(0);
+  ref.listen(authControllerProvider.select((state) => state.status), (_, _) => refresh.value++);
+  ref.onDispose(refresh.dispose);
   final router = GoRouter(
     navigatorKey: rootNavigatorKey,
     initialLocation: '/login',
+    refreshListenable: refresh,
     redirect: (context, state) {
-      final onLogin = state.matchedLocation == '/login';
+      final authStatus = ref.read(authControllerProvider).status;
+      final onLogin = state.matchedLocation == '/login' || state.matchedLocation == '/broadband-login';
       if (authStatus == AuthStatus.authenticated && onLogin) return '/';
       if (authStatus == AuthStatus.unauthenticated && !onLogin) return '/login';
       return null;
     },
     routes: [
       GoRoute(path: '/login', builder: (_, _) => const LoginScreen()),
+      GoRoute(path: '/broadband-login', builder: (_, _) => const BroadbandLoginScreen()),
       GoRoute(
         path: '/',
         builder: (_, _) =>

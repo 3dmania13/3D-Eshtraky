@@ -26,33 +26,53 @@ class UsageScreen extends ConsumerWidget {
           onRetry: () => ref.invalidate(usageDataProvider),
           data: (usage) => RefreshIndicator(
             onRefresh: () => ref.refresh(usageDataProvider.future),
-            child: ListView(
+            child: CustomScrollView(
               physics: const AlwaysScrollableScrollPhysics(),
-              children: [
-                _UsageSummaryGrid(summary: usage.summary),
-                const SizedBox(height: 24),
-                const SectionTitle(AppStrings.dailyUsage),
-                const SizedBox(height: 12),
-                _UsageChart(records: usage.daily),
-                const SizedBox(height: 24),
-                const SectionTitle(AppStrings.usageHistory),
-                const SizedBox(height: 12),
-                ...usage.daily.map(
-                  (item) => Padding(
+              slivers: [
+                SliverList.list(
+                  children: [
+                    _UsageSummaryGrid(summary: usage.summary),
+                    const SizedBox(height: 24),
+                    const SectionTitle(AppStrings.dailyUsage),
+                    const SizedBox(height: 12),
+                    _UsageChart(records: usage.daily),
+                    const SizedBox(height: 24),
+                    const SectionTitle(AppStrings.usageHistory),
+                    const SizedBox(height: 12),
+                  ],
+                ),
+                SliverList.builder(
+                  itemCount: usage.daily.length,
+                  itemBuilder: (context, index) => Padding(
                     padding: const EdgeInsets.only(bottom: 10),
-                    child: _DailyUsageTile(item: item),
+                    child: _DailyUsageTile(item: usage.daily[index]),
                   ),
                 ),
-                const SizedBox(height: 14),
-                const SectionTitle(AppStrings.sessions),
-                const SizedBox(height: 12),
-                ...usage.sessions.map(
-                  (session) => Padding(
+                SliverList.list(
+                  children: [
+                    const SizedBox(height: 14),
+                    const SectionTitle('جلسات الباقة الحالية'),
+                    const SizedBox(height: 12),
+                    if (usage.sessions.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 16),
+                        child: Text(
+                          'لا توجد جلسات جديدة لهذه الباقة حتى الآن.',
+                        ),
+                      ),
+                  ],
+                ),
+                SliverList.builder(
+                  itemCount: usage.sessions.length,
+                  itemBuilder: (context, index) => Padding(
                     padding: const EdgeInsets.only(bottom: 10),
-                    child: _SessionTile(session: session),
+                    child: _SessionTile(
+                      key: ValueKey(usage.sessions[index].sessionId),
+                      session: usage.sessions[index],
+                    ),
                   ),
                 ),
-                const SizedBox(height: 24),
+                const SliverToBoxAdapter(child: SizedBox(height: 24)),
               ],
             ),
           ),
@@ -374,7 +394,7 @@ class _DailyUsageTile extends StatelessWidget {
 }
 
 class _SessionTile extends StatelessWidget {
-  const _SessionTile({required this.session});
+  const _SessionTile({super.key, required this.session});
 
   final RadiusSession session;
 

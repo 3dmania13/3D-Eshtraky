@@ -77,12 +77,18 @@ async function subscriptionRate(pool: Pool, username: string): Promise<string | 
   );
   if (groupRates.length > 1) return null;
   if (groupRates.length === 1) return String(groupRates[0]?.value ?? "").trim() || null;
-  const [packages] = await pool.execute<RowDataPacket[]>(
+  let [packages] = await pool.execute<RowDataPacket[]>(
     `SELECT p.rate_limit,p.upload_speed,p.download_speed
        FROM userinfo u JOIN packages p ON p.id=u.package_id
       WHERE u.username=? LIMIT 1`,
     [username],
   );
+  if (!packages.length) {
+    [packages] = await pool.execute<RowDataPacket[]>(
+      `SELECT p.rate_limit,p.upload_speed,p.download_speed
+         FROM nawa_pppoe_users u JOIN nawa_pppoe_packages p ON p.id=u.package_id
+        WHERE u.username=? LIMIT 1`, [username]);
+  }
   const plan = packages[0];
   if (!plan) return null;
   return (

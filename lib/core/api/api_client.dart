@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import '../auth/account_access.dart';
+
 import 'package:dio/dio.dart';
 
 import '../auth/token_storage.dart';
@@ -16,6 +18,7 @@ class ApiClient {
         onRequest: (options, handler) async {
           if (!options.path.startsWith('/api/v1/auth/')) {
             final token = await tokenStorage.readAccessToken();
+            options.path = accountApiPath(options.path, token);
             if (token != null && token.isNotEmpty) {
               options.headers['Authorization'] = 'Bearer $token';
             }
@@ -140,7 +143,9 @@ class ApiClient {
     }
     try {
       final response = await _refreshDio.post<Object?>(
-        ApiEndpoints.refresh,
+        refreshToken.startsWith('bb_')
+            ? '/api/v1/auth/broadband-refresh'
+            : ApiEndpoints.refresh,
         data: {'refreshToken': refreshToken},
       );
       final json = _asObject(response.data);

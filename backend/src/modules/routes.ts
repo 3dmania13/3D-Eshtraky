@@ -22,7 +22,9 @@ const refreshSchema = {
 export function registerRoutes(
   app: FastifyInstance,
   services: AppServices,
+  accountOnly = false,
 ): void {
+  if (!accountOnly) {
   app.get("/healthz", async () => ({ status: "ok" }));
 
   app.post<{ Body: { username: string; password: string } }>(
@@ -91,6 +93,8 @@ export function registerRoutes(
       return reply.code(204).send();
     },
   );
+
+  }
 
   app.get(
     "/api/v1/subscriber/profile",

@@ -8,13 +8,13 @@ declare module '@fastify/jwt' {
     payload: {
       sub: string;
       username: string;
-      role: 'subscriber';
+      role: 'subscriber' | 'broadband';
       status: SubscriberState;
     };
     user: {
       sub: string;
       username: string;
-      role: 'subscriber';
+      role: 'subscriber' | 'broadband';
       status: SubscriberState;
     };
   }

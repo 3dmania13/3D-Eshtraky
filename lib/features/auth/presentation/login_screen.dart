@@ -6,6 +6,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/theme_toggle_button.dart';
 import '../application/auth_controller.dart';
 import 'network_login_screen.dart';
+import 'package:go_router/go_router.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -62,15 +63,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
             fit: StackFit.expand,
             children: [
               const _LoginBackdrop(),
-              const PositionedDirectional(
-                top: 14,
-                end: 16,
-                child: SafeArea(child: ThemeToggleButton()),
-              ),
               SafeArea(
                 child: Center(
                   child: SingleChildScrollView(
-                    padding: EdgeInsets.all(desktop ? 40 : 22),
+                    padding: EdgeInsets.fromLTRB(
+                      desktop ? 40 : 22,
+                      72,
+                      desktop ? 40 : 22,
+                      desktop ? 40 : 22,
+                    ),
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 1080),
                       child: desktop
@@ -105,6 +106,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                     ),
                   ),
                 ),
+              ),
+              const PositionedDirectional(
+                top: 14,
+                end: 16,
+                child: SafeArea(child: ThemeToggleButton()),
               ),
             ],
           );
@@ -330,6 +336,13 @@ class _LoginCard extends StatelessWidget {
                         )
                       : const Icon(Icons.arrow_back_rounded),
                   label: const Text(AppStrings.login),
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  key: const Key('broadband-login-button'),
+                  onPressed: loading ? null : () => context.push('/broadband-login'),
+                  icon: const Icon(Icons.router_rounded),
+                  label: const Text('تسجيل دخول أصحاب البرودباند'),
                 ),
                 const SizedBox(height: 12),
                 OutlinedButton.icon(

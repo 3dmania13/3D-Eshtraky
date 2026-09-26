@@ -48,13 +48,12 @@ class NotificationsScreen extends ConsumerWidget {
                         final notification = notifications[index];
                         return _NotificationCard(
                           notification: notification,
-                          onTap: notification.isRead
-                              ? null
-                              : () => _markRead(ref, notification.id),
+                          onTap: () =>
+                              _showNotification(context, ref, notification),
                           onOpenLink:
                               notification.linkTitle != null &&
                                   notification.linkUrl != null
-                              ? () => _openLink(context, ref, notification)
+                              ? () => _openLink(context, notification)
                               : null,
                         );
                       },
@@ -66,9 +65,91 @@ class NotificationsScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _markRead(WidgetRef ref, String id) async {
-    await ref.read(notificationRepositoryProvider).markRead(id);
-    ref.invalidate(notificationsProvider);
+  Future<void> _showNotification(
+    BuildContext context,
+    WidgetRef ref,
+    SubscriberNotification notification,
+  ) async {
+    var saving = false;
+    String? error;
+    final repository = ref.read(notificationRepositoryProvider);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setState) => PopScope(
+          canPop: !saving,
+          child: AlertDialog(
+            scrollable: true,
+            title: Text(notification.title),
+            content: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(AppDateUtils.dateTime(notification.createdAt)),
+                const SizedBox(height: 16),
+                SelectableText(notification.body),
+                if (notification.linkTitle != null &&
+                    notification.linkUrl != null)
+                  TextButton.icon(
+                    onPressed: saving
+                        ? null
+                        : () => _openLink(dialogContext, notification),
+                    icon: const Icon(Icons.open_in_new_rounded),
+                    label: Text(notification.linkTitle!),
+                  ),
+                if (error != null) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    error!,
+                    style: TextStyle(
+                      color: Theme.of(dialogContext).colorScheme.error,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: saving
+                    ? null
+                    : () => Navigator.of(dialogContext).pop(false),
+                child: const Text('إغلاق'),
+              ),
+              FilledButton(
+                onPressed: saving
+                    ? null
+                    : () async {
+                        setState(() {
+                          saving = true;
+                          error = null;
+                        });
+                        try {
+                          if (!notification.isRead) {
+                            await repository.markRead(notification.id);
+                          }
+                          if (dialogContext.mounted) {
+                            Navigator.of(dialogContext).pop(true);
+                          }
+                        } catch (_) {
+                          if (dialogContext.mounted) {
+                            setState(() {
+                              saving = false;
+                              error = 'تعذر حفظ حالة الإشعار. حاول مرة أخرى.';
+                            });
+                          }
+                        }
+                      },
+                child: Text(saving ? 'جارٍ الحفظ…' : 'موافق'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (confirmed == true && context.mounted) {
+      ref.invalidate(notificationsProvider);
+    }
   }
 
   Future<void> _markAllRead(
@@ -81,7 +162,6 @@ class NotificationsScreen extends ConsumerWidget {
 
   Future<void> _openLink(
     BuildContext context,
-    WidgetRef ref,
     SubscriberNotification notification,
   ) async {
     final uri = Uri.tryParse(notification.linkUrl ?? '');
@@ -91,7 +171,6 @@ class NotificationsScreen extends ConsumerWidget {
       ).showSnackBar(const SnackBar(content: Text('الرابط المرفق غير صالح.')));
       return;
     }
-    if (!notification.isRead) await _markRead(ref, notification.id);
     final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (!opened && context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

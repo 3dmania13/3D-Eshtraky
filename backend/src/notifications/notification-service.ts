@@ -4,7 +4,6 @@ import type {
 } from "../domain/contracts.js";
 import type {
   DashboardRecord,
-  DeviceRecord,
   SubscriberPrincipal,
 } from "../domain/models.js";
 import { AppError } from "../errors.js";
@@ -20,16 +19,14 @@ export class NotificationService {
   ) {}
 
   async list(principal: SubscriberPrincipal) {
-    const [dashboard, devices] = await Promise.all([
-      this.repository.getDashboard(principal.username),
-      this.repository.getDevices(principal, 100),
-    ]);
+    const dashboard = await this.repository.getDashboard(principal.username);
     const notifications: DerivedNotification[] = [];
     if (dashboard) {
       notifications.push(...this.checkExpiryWarnings(dashboard));
       notifications.push(...this.checkQuotaWarnings(dashboard));
     }
-    notifications.push(...this.detectNewDevice(devices));
+    // Physical-device alerts are collected once by PushWorker. Reading this
+    // list must never create a second alert for the same device.
     await this.repository.upsertDerivedNotifications({
       username: principal.username,
       notifications,
@@ -130,14 +127,4 @@ export class NotificationService {
     ];
   }
 
-  detectNewDevice(devices: readonly DeviceRecord[]): DerivedNotification[] {
-    const cutoff = this.now().getTime() - 24 * 60 * 60 * 1000;
-    return devices
-      .filter((device) => device.firstSeenAt.getTime() >= cutoff)
-      .map((device) => ({
-        type: "newDevice",
-        title: "جهاز جديد على الحساب",
-        body: `تم رصد الجهاز ${device.callingStationId}.`,
-      }));
-  }
 }

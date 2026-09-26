@@ -54,10 +54,10 @@ class AuthController extends StateNotifier<AuthState> {
     }
   }
 
-  Future<bool> login({required String code}) async {
+  Future<bool> login({required String code, bool broadband = false}) async {
     state = const AuthState(status: AuthStatus.authenticating);
     try {
-      final session = await _repository.login(code: code);
+      final session = await _repository.login(code: code, broadband: broadband);
       await _tokenStorage.writeTokens(
         StoredTokens(
           accessToken: session.accessToken,

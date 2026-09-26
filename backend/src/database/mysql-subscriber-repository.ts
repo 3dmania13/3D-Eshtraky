@@ -382,8 +382,15 @@ export class MySqlSubscriberRepository implements AuthRepository, SubscriberRepo
                 AND COALESCE(acctupdatetime,acctstarttime)>=UTC_TIMESTAMP()-INTERVAL 5 MINUTE) AS is_active
          FROM radacct USE INDEX (username)
         WHERE username=?
+          AND acctstarttime>=COALESCE((
+            SELECT a.created_at
+              FROM nawa_audit_log a
+             WHERE a.subject_type='user' AND a.subject_id=?
+               AND a.action_name IN ('user.package_settle','user.settle')
+             ORDER BY a.created_at DESC,a.id DESC LIMIT 1
+          ),'1970-01-01 00:00:00')
         ORDER BY acctstarttime DESC,radacctid DESC LIMIT ?`,
-      [username, limit],
+      [username, username, limit],
     );
     return rows.map((row) => ({
       sessionId: String(row.session_id),
@@ -425,7 +432,9 @@ export class MySqlSubscriberRepository implements AuthRepository, SubscriberRepo
                     COALESCE(ra.acctsessiontime,TIMESTAMPDIFF(SECOND,ra.acctstarttime,
                       COALESCE(ra.acctupdatetime,UTC_TIMESTAMP()))) ELSE 0 END) AS duration_seconds,
               MIN(ra.acctstarttime) AS first_seen_at,
-              MAX(COALESCE(ra.acctupdatetime,ra.acctstoptime,ra.acctstarttime)) AS last_seen_at,
+              MAX(GREATEST(ra.acctstarttime,
+                  COALESCE(ra.acctupdatetime,ra.acctstarttime),
+                  COALESCE(ra.acctstoptime,ra.acctstarttime))) AS last_seen_at,
               SUM(CASE WHEN ra.acctstoptime IS NULL
                     AND COALESCE(ra.acctupdatetime,ra.acctstarttime)>=UTC_TIMESTAMP()-INTERVAL 5 MINUTE THEN
                     COALESCE(ra.input_octets64,ra.acctinputoctets,0)+
@@ -439,6 +448,7 @@ export class MySqlSubscriberRepository implements AuthRepository, SubscriberRepo
            ON dsl.username=? AND BINARY dsl.mac_address=BINARY ra.callingstationid
         WHERE ra.username=? AND NULLIF(ra.callingstationid,'') IS NOT NULL
         GROUP BY ra.callingstationid
+        HAVING last_seen_at>=UTC_TIMESTAMP()-INTERVAL 3 DAY
         ORDER BY last_seen_at DESC LIMIT ?`,
       [subscriber.username, subscriber.username, subscriber.username, limit],
     );

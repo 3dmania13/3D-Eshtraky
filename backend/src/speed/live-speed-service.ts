@@ -212,12 +212,18 @@ export class MySqlLiveSpeedApplier implements LiveSpeedApplier {
         rate = String(rates[0]?.value ?? "").trim();
         if (!rate) return result;
       } else {
-        const [packages] = await this.pool.execute<RowDataPacket[]>(
+        let [packages] = await this.pool.execute<RowDataPacket[]>(
           `SELECT p.rate_limit,p.upload_speed,p.download_speed
            FROM userinfo u JOIN packages p ON p.id=u.package_id
            WHERE u.username=? LIMIT 1`,
           [username],
         );
+        if (!packages.length) {
+          [packages] = await this.pool.execute<RowDataPacket[]>(
+            `SELECT p.rate_limit,p.upload_speed,p.download_speed
+               FROM nawa_pppoe_users u JOIN nawa_pppoe_packages p ON p.id=u.package_id
+              WHERE u.username=? LIMIT 1`, [username]);
+        }
         const plan = packages[0];
         if (!plan) return result;
         // An explicitly uncapped package uses 0/0 to remove the live override.
